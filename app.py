@@ -10,7 +10,7 @@ from flask_cors import CORS
 # Import your existing service modules
 from auth_service import AuthService, create_auth_decorators
 from price_service import PriceService
-from enhanced_scraping_service import EnhancedScrapingService, IPOService
+from scraping_service import EnhancedScrapingService, IPOService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
