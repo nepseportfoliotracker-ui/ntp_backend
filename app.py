@@ -1,4 +1,4 @@
-# main.py - Fixed version with proper MySQL/SQLite support and correct API routes
+# main.py - Enhanced version with IPO/FPO/Rights support
 
 import os
 import logging
@@ -10,7 +10,7 @@ from flask_cors import CORS
 # Import your existing service modules
 from auth_service import AuthService, create_auth_decorators
 from price_service import PriceService
-from scraping_service import ScrapingService
+from enhanced_scraping_service import EnhancedScrapingService, IPOService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -98,7 +98,7 @@ class DatabaseService:
             return conn
 
 class NepalStockApp:
-    """Main application class - works with MySQL or SQLite"""
+    """Enhanced application class with IPO/FPO/Rights support"""
     
     def __init__(self):
         # Initialize database service
@@ -112,13 +112,14 @@ class NepalStockApp:
         # Railway detection
         self.is_railway = 'RAILWAY_ENVIRONMENT' in os.environ or 'RAILWAY_PROJECT_ID' in os.environ
         
-        # Initialize services with database service (FIXED)
+        # Initialize services with database service
         logger.info(f"Initializing services for {self.db_service.db_type}...")
         
         # Pass the database service to all service classes
         self.auth_service = AuthService(self.db_service)
         self.price_service = PriceService(self.db_service)
-        self.scraping_service = ScrapingService(self.price_service)
+        self.ipo_service = IPOService(self.db_service)  # NEW: IPO service
+        self.scraping_service = EnhancedScrapingService(self.price_service, self.ipo_service)  # ENHANCED
         
         # Create Flask app
         self.app = Flask(__name__)
@@ -137,7 +138,7 @@ class NepalStockApp:
         """Initialize application with default data"""
         db_type = self.db_service.db_type.upper()
         platform = "Railway" if self.is_railway else "Local"
-        logger.info(f"Initializing Nepal Stock Scraper Application on {platform} with {db_type}...")
+        logger.info(f"Initializing Enhanced Nepal Stock Scraper Application on {platform} with {db_type}...")
         
         # Log database connection info
         if self.db_service.db_type == 'mysql':
@@ -151,10 +152,10 @@ class NepalStockApp:
         self._ensure_admin_key()
         
         # Run initial data scrape
-        logger.info("Running initial stock data scrape...")
+        logger.info("Running initial stock and IPO data scrape...")
         try:
-            initial_count = self.scraping_service.scrape_all_sources(force=True)
-            logger.info(f"Application initialized with {initial_count} stocks")
+            initial_counts = self.scraping_service.scrape_all_data(force=True)
+            logger.info(f"Application initialized with {initial_counts['stocks']} stocks and {initial_counts['ipos']} IPOs")
         except Exception as e:
             logger.warning(f"Initial scrape failed: {e}")
     
@@ -201,16 +202,21 @@ class NepalStockApp:
                 logger.info("=" * 60)
     
     def _register_routes(self):
-        """Register all API routes"""
+        """Register all API routes including new IPO endpoints"""
         
         # Public routes
         @self.app.route('/api/health', methods=['GET'])
         def health_check():
-            """Health check endpoint"""
+            """Enhanced health check endpoint"""
             try:
                 stock_count = self.price_service.get_stock_count()
                 market_status = self.price_service.get_market_status()
                 last_scrape = self.scraping_service.get_last_scrape_time()
+                last_ipo_scrape = self.scraping_service.get_last_ipo_scrape_time()
+                
+                # Get IPO counts
+                open_ipos = len(self.ipo_service.get_open_issues())
+                coming_soon_ipos = len(self.ipo_service.get_coming_soon_issues())
                 
                 platform = "Railway" if self.is_railway else "Local"
                 
@@ -236,8 +242,11 @@ class NepalStockApp:
                     'platform': platform,
                     'database': db_info,
                     'stock_count': stock_count,
+                    'open_ipos': open_ipos,
+                    'coming_soon_ipos': coming_soon_ipos,
                     'market_status': market_status,
-                    'last_scrape': last_scrape.isoformat() if last_scrape else None,
+                    'last_stock_scrape': last_scrape.isoformat() if last_scrape else None,
+                    'last_ipo_scrape': last_ipo_scrape.isoformat() if last_ipo_scrape else None,
                     'timestamp': datetime.now().isoformat()
                 })
             except Exception as e:
@@ -265,7 +274,7 @@ class NepalStockApp:
                     'error': str(e)
                 }), 500
         
-        # Authenticated routes
+        # Existing stock routes (unchanged)
         @self.app.route('/api/stocks', methods=['GET'])
         @self.require_auth
         def get_stocks():
@@ -425,23 +434,132 @@ class NepalStockApp:
             except Exception as e:
                 return jsonify({'success': False, 'error': str(e)}), 500
         
-        # FIXED: Changed route from /api/scrape to /api/trigger-scrape to match Flutter expectations
-        @self.app.route('/api/trigger-scrape', methods=['POST'])
+        # NEW: IPO/FPO/Rights endpoints
+        @self.app.route('/api/ipos', methods=['GET'])
         @self.require_auth
-        def trigger_scrape():
-            """Manually trigger scraping (FIXED route name)"""
+        def get_ipos():
+            """Get IPO/FPO/Rights issues"""
             try:
-                force = request.json.get('force', True) if request.is_json else True
+                issue_type = request.args.get('type')  # Optional filter: IPO, FPO, Rights
+                status = request.args.get('status', 'open')  # Default to open issues
                 
-                logger.info(f"Manual scrape triggered by {request.auth_info['key_id']} (force={force})")
-                count = self.scraping_service.scrape_all_sources(force=force)
+                if status == 'open':
+                    data = self.ipo_service.get_open_issues(issue_type)
+                elif status == 'coming_soon':
+                    data = self.ipo_service.get_coming_soon_issues()
+                else:
+                    # Get both open and coming soon
+                    open_issues = self.ipo_service.get_open_issues(issue_type)
+                    coming_issues = self.ipo_service.get_coming_soon_issues()
+                    data = open_issues + coming_issues
                 
                 return jsonify({
                     'success': True,
-                    'message': f'Scraping completed successfully. {count} stocks updated.',
-                    'count': count,
+                    'data': data,
+                    'count': len(data),
+                    'status_filter': status,
+                    'type_filter': issue_type,
+                    'last_ipo_scrape': self.scraping_service.get_last_ipo_scrape_time().isoformat() if self.scraping_service.get_last_ipo_scrape_time() else None,
                     'timestamp': datetime.now().isoformat()
-                }), 201  # FIXED: Return 201 status code as expected by Flutter
+                })
+            except Exception as e:
+                logger.error(f"Get IPOs error: {e}")
+                return jsonify({
+                    'success': False,
+                    'error': str(e)
+                }), 500
+        
+        @self.app.route('/api/ipos/open', methods=['GET'])
+        @self.require_auth
+        def get_open_ipos():
+            """Get currently open IPO/FPO/Rights issues"""
+            try:
+                issue_type = request.args.get('type')
+                data = self.ipo_service.get_open_issues(issue_type)
+                
+                return jsonify({
+                    'success': True,
+                    'data': data,
+                    'count': len(data),
+                    'type_filter': issue_type,
+                    'timestamp': datetime.now().isoformat()
+                })
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e)}), 500
+        
+        @self.app.route('/api/ipos/coming-soon', methods=['GET'])
+        @self.require_auth
+        def get_coming_soon_ipos():
+            """Get coming soon IPO/FPO/Rights issues"""
+            try:
+                data = self.ipo_service.get_coming_soon_issues()
+                
+                return jsonify({
+                    'success': True,
+                    'data': data,
+                    'count': len(data),
+                    'timestamp': datetime.now().isoformat()
+                })
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e)}), 500
+        
+        @self.app.route('/api/ipos/search', methods=['GET'])
+        @self.require_auth
+        def search_ipos():
+            """Search IPO/FPO/Rights issues"""
+            try:
+                query = request.args.get('q', '').strip()
+                if not query or len(query) < 2:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Search query must be at least 2 characters'
+                    }), 400
+                
+                limit = min(int(request.args.get('limit', 20)), 100)
+                results = self.ipo_service.search_issues(query, limit)
+                
+                return jsonify({
+                    'success': True,
+                    'data': results,
+                    'count': len(results),
+                    'query': query,
+                    'timestamp': datetime.now().isoformat()
+                })
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e)}), 500
+        
+        # Enhanced scraping endpoint
+        @self.app.route('/api/trigger-scrape', methods=['POST'])
+        @self.require_auth
+        def trigger_scrape():
+            """Manually trigger scraping for both stocks and IPOs"""
+            try:
+                data = request.get_json() or {}
+                force = data.get('force', True)
+                scrape_type = data.get('type', 'all')  # 'stocks', 'ipos', or 'all'
+                
+                logger.info(f"Manual scrape triggered by {request.auth_info['key_id']} (type={scrape_type}, force={force})")
+                
+                results = {}
+                
+                if scrape_type in ['stocks', 'all']:
+                    stock_count = self.scraping_service.scrape_all_sources(force=force)
+                    results['stocks'] = stock_count
+                
+                if scrape_type in ['ipos', 'all']:
+                    ipo_count = self.scraping_service.scrape_ipo_sources(force=force)
+                    results['ipos'] = ipo_count
+                
+                total_count = sum(results.values())
+                
+                return jsonify({
+                    'success': True,
+                    'message': f'Scraping completed successfully. {total_count} total items updated.',
+                    'results': results,
+                    'total_count': total_count,
+                    'scrape_type': scrape_type,
+                    'timestamp': datetime.now().isoformat()
+                }), 201
             except Exception as e:
                 logger.error(f"Manual scrape failed: {e}")
                 return jsonify({
@@ -449,11 +567,11 @@ class NepalStockApp:
                     'error': str(e)
                 }), 500
         
-        # FIXED: Authentication routes - Flutter expects /api/key-info not /api/auth/key-info
+        # Authentication routes (unchanged)
         @self.app.route('/api/key-info', methods=['GET'])
         @self.require_auth
         def get_key_info():
-            """Get information about the authenticated key (FIXED route path)"""
+            """Get information about the authenticated key"""
             try:
                 key_info = self.auth_service.get_key_details(request.auth_info['key_id'])
                 if key_info:
@@ -473,7 +591,6 @@ class NepalStockApp:
                     'error': str(e)
                 }), 500
         
-        # Keep the old auth route for backward compatibility
         @self.app.route('/api/auth/key-info', methods=['GET'])
         @self.require_auth
         def get_key_info_auth():
@@ -500,7 +617,7 @@ class NepalStockApp:
             except Exception as e:
                 return jsonify({'success': False, 'error': str(e)}), 500
         
-        # Admin routes - FIXED to match Flutter expectations
+        # Admin routes
         @self.app.route('/api/admin/generate-key', methods=['POST'])
         @self.require_auth
         @self.require_admin
@@ -560,12 +677,11 @@ class NepalStockApp:
                     'error': str(e)
                 }), 500
         
-        # FIXED: Flutter expects DELETE at /api/admin/keys/<key_id>/delete
         @self.app.route('/api/admin/keys/<key_id>/delete', methods=['DELETE'])
         @self.require_auth
         @self.require_admin
         def admin_delete_key(key_id):
-            """Delete/deactivate an API key (admin only) - FIXED route path"""
+            """Delete/deactivate an API key (admin only)"""
             try:
                 if key_id == request.auth_info['key_id']:
                     return jsonify({
@@ -573,7 +689,6 @@ class NepalStockApp:
                         'error': 'Cannot delete your own key'
                     }), 400
                 
-                # Check if key exists first
                 key_details = self.auth_service.get_key_details(key_id)
                 if not key_details:
                     return jsonify({
@@ -599,7 +714,6 @@ class NepalStockApp:
                     'error': str(e)
                 }), 500
         
-        # Keep the old admin route for backward compatibility
         @self.app.route('/api/admin/keys/<key_id>', methods=['DELETE'])
         @self.require_auth
         @self.require_admin
@@ -607,12 +721,11 @@ class NepalStockApp:
             """Legacy route for deactivating keys"""
             return admin_delete_key(key_id)
         
-        # FIXED: Add the missing /api/admin/stats route that Flutter expects
         @self.app.route('/api/admin/stats', methods=['GET'])
         @self.require_auth
         @self.require_admin
         def admin_get_stats():
-            """Get system statistics (admin only) - FIXED: Added missing route"""
+            """Get enhanced system statistics (admin only)"""
             try:
                 # Get usage stats for the last 24 hours
                 usage_stats = self.auth_service.get_usage_stats(days=1)
@@ -644,12 +757,23 @@ class NepalStockApp:
                     logger.warning(f"Error getting stock count: {e}")
                     stock_count = 0
                 
+                # Get IPO counts
+                try:
+                    open_ipos = len(self.ipo_service.get_open_issues())
+                    coming_soon_ipos = len(self.ipo_service.get_coming_soon_issues())
+                except Exception as e:
+                    logger.warning(f"Error getting IPO counts: {e}")
+                    open_ipos = coming_soon_ipos = 0
+                
                 stats = {
                     'active_keys': active_keys,
                     'total_keys': len(all_keys),
                     'active_sessions': active_sessions,
                     'requests_24h': total_requests_24h,
                     'stock_count': stock_count,
+                    'open_ipos': open_ipos,
+                    'coming_soon_ipos': coming_soon_ipos,
+                    'total_ipos': open_ipos + coming_soon_ipos,
                     'timestamp': datetime.now().isoformat()
                 }
                 
@@ -718,13 +842,19 @@ class NepalStockApp:
         db_type = self.db_service.db_type.upper()
         platform = "Railway" if self.is_railway else "Local"
         
-        logger.info(f"Starting Nepal Stock Scraper API on {platform}")
+        logger.info(f"Starting Enhanced Nepal Stock Scraper API on {platform}")
         logger.info(f"Host: {self.flask_host}, Port: {self.flask_port}")
         logger.info(f"Database: {db_type}")
+        logger.info("Features: Stock prices, IPO/FPO/Rights tracking")
         
         try:
             stock_count = self.price_service.get_stock_count()
             logger.info(f"Stock count: {stock_count}")
+            
+            open_ipos = len(self.ipo_service.get_open_issues())
+            coming_ipos = len(self.ipo_service.get_coming_soon_issues())
+            logger.info(f"Open IPOs: {open_ipos}, Coming soon: {coming_ipos}")
+            
             market_status = self.price_service.get_market_status()
             logger.info(f"Market status: {market_status['status']}")
         except Exception as e:
@@ -742,7 +872,7 @@ def create_app():
     """Factory function for Gunicorn"""
     try:
         nepal_app = NepalStockApp()
-        logger.info("Application factory completed successfully")
+        logger.info("Enhanced application factory completed successfully")
         return nepal_app.app
     except Exception as e:
         logger.error(f"Application factory failed: {e}")

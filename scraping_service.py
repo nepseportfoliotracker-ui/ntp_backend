@@ -1,4 +1,4 @@
-# scraping_service.py - Web Scraping Service
+# enhanced_scraping_service.py - Web Scraping Service with IPO/FPO/Rights Support
 
 import requests
 from bs4 import BeautifulSoup
@@ -9,34 +9,56 @@ import threading
 import time
 import re
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
+import json
 
 logger = logging.getLogger(__name__)
 
-class ScrapingService:
-    """Handle all web scraping operations for stock data"""
+class EnhancedScrapingService:
+    """Enhanced scraping service for stocks, IPOs, FPOs, and Rights shares"""
     
-    def __init__(self, price_service):
+    def __init__(self, price_service, ipo_service):
         self.price_service = price_service
+        self.ipo_service = ipo_service
         self.last_scrape_time = None
+        self.last_ipo_scrape_time = None
         self.scrape_lock = threading.Lock()
         
-        # Data sources configuration
-        self.sources = [
+        # Stock data sources configuration
+        self.stock_sources = [
             {
                 'name': 'ShareSansar Live',
                 'url': 'https://www.sharesansar.com/live-trading',
-                'parser': self._parse_sharesansar
+                'parser': self._parse_sharesansar_stocks
             },
             {
                 'name': 'ShareSansar Today',
                 'url': 'https://www.sharesansar.com/today-share-price',
-                'parser': self._parse_sharesansar
+                'parser': self._parse_sharesansar_stocks
             },
             {
                 'name': 'MeroLagani',
                 'url': 'https://merolagani.com/LatestMarket.aspx',
                 'parser': self._parse_merolagani
+            }
+        ]
+        
+        # IPO/FPO/Rights data sources configuration
+        self.ipo_sources = [
+            {
+                'name': 'ShareSansar Existing Issues',
+                'url': 'https://www.sharesansar.com/existing-issues',
+                'parser': self._parse_sharesansar_existing_issues
+            },
+            {
+                'name': 'ShareSansar Upcoming Issues',
+                'url': 'https://www.sharesansar.com/upcoming-issue',
+                'parser': self._parse_sharesansar_upcoming_issues
+            },
+            {
+                'name': 'MeroLagani IPO',
+                'url': 'https://merolagani.com/Ipo.aspx',
+                'parser': self._parse_merolagani_ipo
             }
         ]
         
@@ -81,9 +103,9 @@ class ScrapingService:
             successful_scrapes = []
             total_stocks = 0
             
-            for source in self.sources:
+            for source in self.stock_sources:
                 try:
-                    logger.info(f"Scraping from: {source['name']}")
+                    logger.info(f"Scraping stocks from: {source['name']}")
                     stocks = self._scrape_source(source)
                     
                     if stocks and len(stocks) >= 50:  # Minimum threshold
@@ -97,23 +119,101 @@ class ScrapingService:
                             logger.info(f"Successfully scraped {count} stocks from {source['name']}")
                             break  # Use first successful source
                     else:
-                        logger.warning(f"Insufficient data from {source['name']}: {len(stocks) if stocks else 0} stocks")
+                        logger.warning(f"Insufficient stock data from {source['name']}: {len(stocks) if stocks else 0} stocks")
                 
                 except Exception as e:
-                    logger.error(f"Error scraping {source['name']}: {e}")
+                    logger.error(f"Error scraping stocks from {source['name']}: {e}")
                     continue
             
             if successful_scrapes:
                 self.last_scrape_time = datetime.now()
-                logger.info(f"Scraping completed successfully. {total_stocks} stocks updated.")
+                logger.info(f"Stock scraping completed successfully. {total_stocks} stocks updated.")
                 return total_stocks
             else:
-                logger.warning("All scraping sources failed, using sample data")
+                logger.warning("All stock scraping sources failed, using sample data")
                 return self._populate_sample_data()
+    
+    def scrape_ipo_sources(self, force=False):
+        """Scrape IPO/FPO/Rights data from all available sources"""
+        with self.scrape_lock:
+            logger.info("Starting IPO/FPO/Rights data scraping from all sources...")
+            
+            successful_scrapes = []
+            total_issues = 0
+            
+            for source in self.ipo_sources:
+                try:
+                    logger.info(f"Scraping IPO data from: {source['name']}")
+                    issues = self._scrape_source(source)
+                    
+                    if issues:
+                        # Filter for open issues (current date between open and close dates)
+                        open_issues = self._filter_open_issues(issues)
+                        
+                        if open_issues:
+                            count = self.ipo_service.save_issues(open_issues, source['name'])
+                            if count > 0:
+                                successful_scrapes.append({
+                                    'source': source['name'],
+                                    'count': count
+                                })
+                                total_issues += count
+                                logger.info(f"Successfully scraped {count} open issues from {source['name']}")
+                        else:
+                            logger.info(f"No open issues found from {source['name']}")
+                    else:
+                        logger.warning(f"No data from {source['name']}")
+                
+                except Exception as e:
+                    logger.error(f"Error scraping IPO data from {source['name']}: {e}")
+                    continue
+            
+            if successful_scrapes:
+                self.last_ipo_scrape_time = datetime.now()
+                logger.info(f"IPO scraping completed successfully. {total_issues} issues updated.")
+                return total_issues
+            else:
+                logger.warning("All IPO scraping sources failed")
+                return 0
+    
+    def _filter_open_issues(self, issues):
+        """Filter issues that are currently open (between opening and closing dates)"""
+        open_issues = []
+        current_date = datetime.now().date()
+        
+        for issue in issues:
+            try:
+                open_date = issue.get('open_date')
+                close_date = issue.get('close_date')
+                
+                if open_date and close_date:
+                    # Parse dates if they're strings
+                    if isinstance(open_date, str):
+                        open_date = datetime.strptime(open_date, '%Y-%m-%d').date()
+                    if isinstance(close_date, str):
+                        close_date = datetime.strptime(close_date, '%Y-%m-%d').date()
+                    
+                    # Check if current date is between open and close dates
+                    if open_date <= current_date <= close_date:
+                        issue['status'] = 'open'
+                        open_issues.append(issue)
+                    elif current_date < open_date:
+                        issue['status'] = 'coming_soon'
+                        # Include coming soon issues that start within next 7 days
+                        if (open_date - current_date).days <= 7:
+                            open_issues.append(issue)
+                    else:
+                        issue['status'] = 'closed'
+                        
+            except Exception as e:
+                logger.warning(f"Error filtering issue dates: {e}")
+                continue
+                
+        return open_issues
     
     def _scrape_source(self, source):
         """Scrape data from a single source"""
-        stocks = []
+        data = []
         
         # Try with SSL verification first, then without
         for verify_ssl in [True, False]:
@@ -126,9 +226,9 @@ class ScrapingService:
                 response.raise_for_status()
                 
                 if response.status_code == 200 and len(response.content) > 1000:
-                    stocks = source['parser'](response.content, source['url'])
-                    if stocks:
-                        return stocks
+                    data = source['parser'](response.content, source['url'])
+                    if data:
+                        return data
                 
                 break  # Break verify_ssl loop if successful
                 
@@ -143,10 +243,10 @@ class ScrapingService:
                 logger.warning(f"Error with {source['url']} (SSL verify: {verify_ssl}): {e}")
                 break
         
-        return stocks
+        return data
     
-    def _parse_sharesansar(self, content, url):
-        """Parse ShareSansar website data"""
+    def _parse_sharesansar_stocks(self, content, url):
+        """Parse ShareSansar website stock data"""
         soup = BeautifulSoup(content, 'html.parser')
         stocks_data = []
         
@@ -210,20 +310,260 @@ class ScrapingService:
                         stocks_data.append(stock_data)
                         
                     except Exception as e:
-                        logger.debug(f"Error parsing ShareSansar row: {e}")
+                        logger.debug(f"Error parsing ShareSansar stock row: {e}")
                         continue
                 
                 if stocks_data:
-                    logger.info(f"ShareSansar parsing found {len(stocks_data)} stocks")
+                    logger.info(f"ShareSansar stock parsing found {len(stocks_data)} stocks")
                     return stocks_data
         
         except Exception as e:
-            logger.error(f"Error in ShareSansar parsing: {e}")
+            logger.error(f"Error in ShareSansar stock parsing: {e}")
         
         return stocks_data
     
+    def _parse_sharesansar_existing_issues(self, content, url):
+        """Parse ShareSansar existing issues page for IPO/FPO/Rights"""
+        soup = BeautifulSoup(content, 'html.parser')
+        issues_data = []
+        
+        try:
+            # Look for tables containing IPO/FPO/Rights data
+            tables = soup.find_all('table')
+            
+            for table in tables:
+                rows = table.find_all('tr')
+                if len(rows) < 2:
+                    continue
+                
+                # Check if this looks like an issues table
+                header_row = rows[0] if rows else None
+                if not header_row:
+                    continue
+                
+                header_text = header_row.get_text().lower()
+                if not any(keyword in header_text for keyword in ['company', 'issue', 'open', 'close', 'type']):
+                    continue
+                
+                logger.info("Found issues table in ShareSansar existing issues")
+                
+                # Get column indices
+                header_cells = header_row.find_all(['th', 'td'])
+                headers = [cell.get_text(strip=True).lower() for cell in header_cells]
+                
+                company_idx = self._find_column_index(headers, ['company', 'name', 'issuer'])
+                type_idx = self._find_column_index(headers, ['type', 'issue type', 'category'])
+                units_idx = self._find_column_index(headers, ['units', 'shares', 'quantity'])
+                price_idx = self._find_column_index(headers, ['price', 'rate', 'amount'])
+                open_idx = self._find_column_index(headers, ['open', 'opening', 'start'])
+                close_idx = self._find_column_index(headers, ['close', 'closing', 'end'])
+                
+                if company_idx < 0:
+                    continue
+                
+                # Parse data rows
+                for row in rows[1:]:
+                    cols = row.find_all(['td', 'th'])
+                    if len(cols) <= company_idx:
+                        continue
+                    
+                    try:
+                        company_name = cols[company_idx].get_text(strip=True)
+                        if not company_name or len(company_name) < 3:
+                            continue
+                        
+                        issue_type = 'IPO'  # Default
+                        if type_idx >= 0 and len(cols) > type_idx:
+                            type_text = cols[type_idx].get_text(strip=True).upper()
+                            if 'FPO' in type_text:
+                                issue_type = 'FPO'
+                            elif 'RIGHT' in type_text:
+                                issue_type = 'Rights'
+                            elif 'DEBENTURE' in type_text:
+                                issue_type = 'Debenture'
+                        
+                        units = 0
+                        if units_idx >= 0 and len(cols) > units_idx:
+                            units = DataValidator.safe_int(cols[units_idx].get_text(strip=True))
+                        
+                        price = 0.0
+                        if price_idx >= 0 and len(cols) > price_idx:
+                            price = DataValidator.safe_float(cols[price_idx].get_text(strip=True))
+                        
+                        open_date = None
+                        if open_idx >= 0 and len(cols) > open_idx:
+                            open_date = self._parse_nepali_date(cols[open_idx].get_text(strip=True))
+                        
+                        close_date = None
+                        if close_idx >= 0 and len(cols) > close_idx:
+                            close_date = self._parse_nepali_date(cols[close_idx].get_text(strip=True))
+                        
+                        # Build issue data
+                        issue_data = {
+                            'company_name': company_name,
+                            'symbol': DataValidator.extract_symbol_from_company(company_name),
+                            'issue_type': issue_type,
+                            'units': units,
+                            'price': price,
+                            'total_amount': units * price if units and price else 0,
+                            'open_date': open_date,
+                            'close_date': close_date,
+                            'status': 'unknown',
+                            'source': url,
+                            'scraped_at': datetime.now()
+                        }
+                        
+                        issues_data.append(issue_data)
+                        
+                    except Exception as e:
+                        logger.debug(f"Error parsing ShareSansar issue row: {e}")
+                        continue
+                
+                if issues_data:
+                    logger.info(f"ShareSansar existing issues parsing found {len(issues_data)} issues")
+                    return issues_data
+        
+        except Exception as e:
+            logger.error(f"Error in ShareSansar existing issues parsing: {e}")
+        
+        return issues_data
+    
+    def _parse_sharesansar_upcoming_issues(self, content, url):
+        """Parse ShareSansar upcoming issues page"""
+        soup = BeautifulSoup(content, 'html.parser')
+        issues_data = []
+        
+        try:
+            # Similar parsing logic as existing issues but for upcoming ones
+            tables = soup.find_all('table')
+            
+            for table in tables:
+                rows = table.find_all('tr')
+                if len(rows) < 2:
+                    continue
+                
+                header_row = rows[0] if rows else None
+                if not header_row:
+                    continue
+                
+                header_text = header_row.get_text().lower()
+                if not any(keyword in header_text for keyword in ['company', 'issue', 'expected']):
+                    continue
+                
+                logger.info("Found upcoming issues table in ShareSansar")
+                
+                # Parse similar to existing issues but mark as coming soon
+                header_cells = header_row.find_all(['th', 'td'])
+                headers = [cell.get_text(strip=True).lower() for cell in header_cells]
+                
+                company_idx = self._find_column_index(headers, ['company', 'name', 'issuer'])
+                type_idx = self._find_column_index(headers, ['type', 'issue type'])
+                
+                if company_idx < 0:
+                    continue
+                
+                for row in rows[1:]:
+                    cols = row.find_all(['td', 'th'])
+                    if len(cols) <= company_idx:
+                        continue
+                    
+                    try:
+                        company_name = cols[company_idx].get_text(strip=True)
+                        if not company_name or len(company_name) < 3:
+                            continue
+                        
+                        issue_type = 'IPO'
+                        if type_idx >= 0 and len(cols) > type_idx:
+                            type_text = cols[type_idx].get_text(strip=True).upper()
+                            if 'FPO' in type_text:
+                                issue_type = 'FPO'
+                            elif 'RIGHT' in type_text:
+                                issue_type = 'Rights'
+                        
+                        issue_data = {
+                            'company_name': company_name,
+                            'symbol': DataValidator.extract_symbol_from_company(company_name),
+                            'issue_type': issue_type,
+                            'units': 0,  # Usually not specified for upcoming
+                            'price': 0.0,
+                            'total_amount': 0,
+                            'open_date': None,  # Usually TBD for upcoming
+                            'close_date': None,
+                            'status': 'coming_soon',
+                            'source': url,
+                            'scraped_at': datetime.now()
+                        }
+                        
+                        issues_data.append(issue_data)
+                        
+                    except Exception as e:
+                        logger.debug(f"Error parsing ShareSansar upcoming issue row: {e}")
+                        continue
+                
+                if issues_data:
+                    logger.info(f"ShareSansar upcoming issues parsing found {len(issues_data)} issues")
+                    return issues_data
+        
+        except Exception as e:
+            logger.error(f"Error in ShareSansar upcoming issues parsing: {e}")
+        
+        return issues_data
+    
+    def _parse_merolagani_ipo(self, content, url):
+        """Parse MeroLagani IPO page"""
+        soup = BeautifulSoup(content, 'html.parser')
+        issues_data = []
+        
+        try:
+            # Look for IPO data table in MeroLagani
+            table = soup.find('table', {'class': 'table'})
+            
+            if table:
+                rows = table.find_all('tr')
+                if len(rows) < 2:
+                    return issues_data
+                
+                # Parse rows (skip header)
+                for row in rows[1:]:
+                    cols = row.find_all('td')
+                    if len(cols) < 4:
+                        continue
+                    
+                    try:
+                        company_name = cols[0].get_text(strip=True)
+                        if not company_name or len(company_name) < 3:
+                            continue
+                        
+                        issue_data = {
+                            'company_name': company_name,
+                            'symbol': DataValidator.extract_symbol_from_company(company_name),
+                            'issue_type': 'IPO',  # MeroLagani IPO page
+                            'units': DataValidator.safe_int(cols[1].get_text(strip=True)) if len(cols) > 1 else 0,
+                            'price': DataValidator.safe_float(cols[2].get_text(strip=True)) if len(cols) > 2 else 0.0,
+                            'total_amount': 0,
+                            'open_date': self._parse_nepali_date(cols[3].get_text(strip=True)) if len(cols) > 3 else None,
+                            'close_date': self._parse_nepali_date(cols[4].get_text(strip=True)) if len(cols) > 4 else None,
+                            'status': 'unknown',
+                            'source': url,
+                            'scraped_at': datetime.now()
+                        }
+                        
+                        if issue_data['units'] and issue_data['price']:
+                            issue_data['total_amount'] = issue_data['units'] * issue_data['price']
+                        
+                        issues_data.append(issue_data)
+                        
+                    except Exception as e:
+                        logger.debug(f"Error parsing MeroLagani IPO row: {e}")
+                        continue
+        
+        except Exception as e:
+            logger.error(f"Error in MeroLagani IPO parsing: {e}")
+        
+        return issues_data
+    
     def _parse_merolagani(self, content, url):
-        """Parse MeroLagani website data"""
+        """Parse MeroLagani website stock data (unchanged from original)"""
         soup = BeautifulSoup(content, 'html.parser')
         stocks_data = []
         
@@ -278,8 +618,60 @@ class ScrapingService:
         
         return stocks_data
     
+    def _parse_nepali_date(self, date_str):
+        """Parse Nepali date string and convert to standard date format"""
+        if not date_str or date_str.strip() == '-':
+            return None
+        
+        try:
+            # Clean the date string
+            date_str = date_str.strip()
+            
+            # Common Nepali date formats to handle
+            date_patterns = [
+                r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})',  # YYYY-MM-DD or YYYY/MM/DD
+                r'(\d{1,2})[/-](\d{1,2})[/-](\d{4})',  # MM-DD-YYYY or MM/DD/YYYY
+                r'(\d{1,2})[/-](\d{1,2})[/-](\d{2})',   # MM-DD-YY or MM/DD/YY
+            ]
+            
+            for pattern in date_patterns:
+                match = re.search(pattern, date_str)
+                if match:
+                    parts = match.groups()
+                    
+                    # Handle different formats
+                    if len(parts[0]) == 4:  # YYYY-MM-DD format
+                        year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+                    elif len(parts[2]) == 4:  # MM-DD-YYYY format
+                        month, day, year = int(parts[0]), int(parts[1]), int(parts[2])
+                    else:  # MM-DD-YY format
+                        month, day = int(parts[0]), int(parts[1])
+                        year = int(parts[2])
+                        if year < 50:  # Assume 20xx for years < 50
+                            year += 2000
+                        else:  # Assume 19xx for years >= 50
+                            year += 1900
+                    
+                    # Validate ranges
+                    if 1 <= month <= 12 and 1 <= day <= 31 and 1980 <= year <= 2050:
+                        try:
+                            return datetime(year, month, day).date()
+                        except ValueError:
+                            continue
+            
+            # If no pattern matches, try to extract just year
+            year_match = re.search(r'\b(20\d{2})\b', date_str)
+            if year_match:
+                year = int(year_match.group(1))
+                return datetime(year, 1, 1).date()  # Default to Jan 1st
+                
+        except Exception as e:
+            logger.debug(f"Error parsing date '{date_str}': {e}")
+        
+        return None
+    
     def _build_stock_data(self, symbol, ltp, change, qty, source_url):
-        """Build standardized stock data dictionary"""
+        """Build standardized stock data dictionary (unchanged from original)"""
         change_percent = (change / ltp * 100) if ltp > 0 else 0.0
         prev_close = ltp - change if change != 0 else ltp
         
@@ -308,7 +700,7 @@ class ScrapingService:
         return -1
     
     def _populate_sample_data(self):
-        """Populate sample data when scraping fails"""
+        """Populate sample stock data when scraping fails (unchanged from original)"""
         logger.info("Populating sample stock data...")
         
         sample_stocks = [
@@ -358,8 +750,293 @@ class ScrapingService:
         return count
     
     def get_last_scrape_time(self):
-        """Get the timestamp of last successful scrape"""
+        """Get the timestamp of last successful stock scrape"""
         return self.last_scrape_time
+    
+    def get_last_ipo_scrape_time(self):
+        """Get the timestamp of last successful IPO scrape"""
+        return self.last_ipo_scrape_time
+    
+    def scrape_all_data(self, force=False):
+        """Scrape both stock and IPO data"""
+        stock_count = self.scrape_all_sources(force=force)
+        ipo_count = self.scrape_ipo_sources(force=force)
+        
+        return {
+            'stocks': stock_count,
+            'ipos': ipo_count,
+            'total': stock_count + ipo_count
+        }
+
+
+class IPOService:
+    """Service for handling IPO/FPO/Rights share data"""
+    
+    def __init__(self, db_service):
+        self.db_service = db_service
+        self._create_tables()
+    
+    def _create_tables(self):
+        """Create IPO/FPO/Rights tables"""
+        try:
+            conn = self.db_service.get_connection()
+            cursor = conn.cursor()
+            
+            if self.db_service.db_type == 'mysql':
+                # MySQL table creation
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS issues (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        company_name VARCHAR(255) NOT NULL,
+                        symbol VARCHAR(20),
+                        issue_type ENUM('IPO', 'FPO', 'Rights', 'Debenture') NOT NULL,
+                        units BIGINT DEFAULT 0,
+                        price DECIMAL(10, 2) DEFAULT 0.00,
+                        total_amount DECIMAL(15, 2) DEFAULT 0.00,
+                        open_date DATE,
+                        close_date DATE,
+                        status ENUM('coming_soon', 'open', 'closed') DEFAULT 'coming_soon',
+                        source VARCHAR(500),
+                        scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        INDEX idx_symbol (symbol),
+                        INDEX idx_issue_type (issue_type),
+                        INDEX idx_status (status),
+                        INDEX idx_open_date (open_date),
+                        INDEX idx_close_date (close_date)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                ''')
+            else:
+                # SQLite table creation
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS issues (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        company_name TEXT NOT NULL,
+                        symbol TEXT,
+                        issue_type TEXT NOT NULL CHECK (issue_type IN ('IPO', 'FPO', 'Rights', 'Debenture')),
+                        units INTEGER DEFAULT 0,
+                        price REAL DEFAULT 0.0,
+                        total_amount REAL DEFAULT 0.0,
+                        open_date DATE,
+                        close_date DATE,
+                        status TEXT DEFAULT 'coming_soon' CHECK (status IN ('coming_soon', 'open', 'closed')),
+                        source TEXT,
+                        scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                
+                # Create indices for SQLite
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_issues_symbol ON issues (symbol)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_issues_type ON issues (issue_type)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_issues_status ON issues (status)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_issues_open_date ON issues (open_date)')
+            
+            conn.commit()
+            logger.info(f"IPO tables created successfully for {self.db_service.db_type}")
+            
+        except Exception as e:
+            logger.error(f"Error creating IPO tables: {e}")
+            raise
+        finally:
+            try:
+                conn.close()
+            except:
+                pass
+    
+    def save_issues(self, issues_data, source_name):
+        """Save IPO/FPO/Rights data to database"""
+        if not issues_data:
+            return 0
+        
+        try:
+            conn = self.db_service.get_connection()
+            cursor = conn.cursor()
+            
+            saved_count = 0
+            
+            for issue in issues_data:
+                try:
+                    if self.db_service.db_type == 'mysql':
+                        cursor.execute('''
+                            INSERT INTO issues (
+                                company_name, symbol, issue_type, units, price, 
+                                total_amount, open_date, close_date, status, source, scraped_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE
+                                units = VALUES(units),
+                                price = VALUES(price),
+                                total_amount = VALUES(total_amount),
+                                open_date = VALUES(open_date),
+                                close_date = VALUES(close_date),
+                                status = VALUES(status),
+                                source = VALUES(source),
+                                updated_at = CURRENT_TIMESTAMP
+                        ''', (
+                            issue['company_name'],
+                            issue.get('symbol'),
+                            issue['issue_type'],
+                            issue.get('units', 0),
+                            issue.get('price', 0.0),
+                            issue.get('total_amount', 0.0),
+                            issue.get('open_date'),
+                            issue.get('close_date'),
+                            issue.get('status', 'coming_soon'),
+                            issue.get('source'),
+                            datetime.now()
+                        ))
+                    else:
+                        # SQLite - use INSERT OR REPLACE
+                        cursor.execute('''
+                            INSERT OR REPLACE INTO issues (
+                                company_name, symbol, issue_type, units, price, 
+                                total_amount, open_date, close_date, status, source, scraped_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            issue['company_name'],
+                            issue.get('symbol'),
+                            issue['issue_type'],
+                            issue.get('units', 0),
+                            issue.get('price', 0.0),
+                            issue.get('total_amount', 0.0),
+                            issue.get('open_date'),
+                            issue.get('close_date'),
+                            issue.get('status', 'coming_soon'),
+                            issue.get('source'),
+                            datetime.now(),
+                            datetime.now()
+                        ))
+                    
+                    saved_count += 1
+                    
+                except Exception as e:
+                    logger.warning(f"Error saving issue {issue.get('company_name', 'Unknown')}: {e}")
+                    continue
+            
+            conn.commit()
+            logger.info(f"Saved {saved_count} issues from {source_name}")
+            return saved_count
+            
+        except Exception as e:
+            logger.error(f"Error saving issues: {e}")
+            return 0
+        finally:
+            try:
+                conn.close()
+            except:
+                pass
+    
+    def get_open_issues(self, issue_type=None):
+        """Get currently open issues"""
+        try:
+            conn = self.db_service.get_connection()
+            cursor = conn.cursor()
+            
+            query = "SELECT * FROM issues WHERE status = 'open'"
+            params = []
+            
+            if issue_type:
+                if self.db_service.db_type == 'mysql':
+                    query += " AND issue_type = %s"
+                else:
+                    query += " AND issue_type = ?"
+                params.append(issue_type)
+            
+            query += " ORDER BY open_date DESC"
+            
+            cursor.execute(query, params)
+            
+            if self.db_service.db_type == 'mysql':
+                columns = [desc[0] for desc in cursor.description]
+                results = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            else:
+                cursor.row_factory = sqlite3.Row
+                results = [dict(row) for row in cursor.fetchall()]
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error getting open issues: {e}")
+            return []
+        finally:
+            try:
+                conn.close()
+            except:
+                pass
+    
+    def get_coming_soon_issues(self):
+        """Get issues that are coming soon"""
+        try:
+            conn = self.db_service.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT * FROM issues WHERE status = 'coming_soon' ORDER BY open_date ASC")
+            
+            if self.db_service.db_type == 'mysql':
+                columns = [desc[0] for desc in cursor.description]
+                results = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            else:
+                cursor.row_factory = sqlite3.Row
+                results = [dict(row) for row in cursor.fetchall()]
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error getting coming soon issues: {e}")
+            return []
+        finally:
+            try:
+                conn.close()
+            except:
+                pass
+    
+    def search_issues(self, query, limit=20):
+        """Search issues by company name or symbol"""
+        try:
+            conn = self.db_service.get_connection()
+            cursor = conn.cursor()
+            
+            search_pattern = f"%{query}%"
+            
+            if self.db_service.db_type == 'mysql':
+                cursor.execute('''
+                    SELECT * FROM issues 
+                    WHERE company_name LIKE %s OR symbol LIKE %s
+                    ORDER BY 
+                        CASE WHEN status = 'open' THEN 1
+                             WHEN status = 'coming_soon' THEN 2
+                             ELSE 3 END,
+                        open_date DESC
+                    LIMIT %s
+                ''', (search_pattern, search_pattern, limit))
+                
+                columns = [desc[0] for desc in cursor.description]
+                results = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            else:
+                cursor.execute('''
+                    SELECT * FROM issues 
+                    WHERE company_name LIKE ? OR symbol LIKE ?
+                    ORDER BY 
+                        CASE WHEN status = 'open' THEN 1
+                             WHEN status = 'coming_soon' THEN 2
+                             ELSE 3 END,
+                        open_date DESC
+                    LIMIT ?
+                ''', (search_pattern, search_pattern, limit))
+                
+                cursor.row_factory = sqlite3.Row
+                results = [dict(row) for row in cursor.fetchall()]
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error searching issues: {e}")
+            return []
+        finally:
+            try:
+                conn.close()
+            except:
+                pass
 
 
 class DataValidator:
@@ -413,3 +1090,27 @@ class DataValidator:
             return int(float(cleaned_value)) if cleaned_value and cleaned_value != '-' else 0
         except:
             return 0
+    
+    @staticmethod
+    def extract_symbol_from_company(company_name):
+        """Extract or generate symbol from company name"""
+        if not company_name:
+            return ""
+        
+        # Remove common words and take first letters
+        words = re.findall(r'\b[A-Z][A-Z\s]*[A-Z]\b|\b[A-Z]+\b', company_name.upper())
+        
+        if words:
+            # Take first letters of significant words
+            symbol_parts = []
+            for word in words[:3]:  # Max 3 words
+                if word in ['LIMITED', 'LTD', 'COMPANY', 'CO', 'BANK', 'FINANCE']:
+                    symbol_parts.append(word[0])
+                else:
+                    symbol_parts.append(word[:2] if len(word) > 1 else word)
+            
+            symbol = ''.join(symbol_parts)[:6]  # Max 6 characters
+            return symbol if len(symbol) >= 2 else company_name[:4].upper()
+        
+        # Fallback: take first 4 characters
+        return re.sub(r'[^A-Z]', '', company_name.upper())[:4]
