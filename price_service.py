@@ -1,167 +1,106 @@
-# price_service.py - Stock Price and Market Data Service
+# price_service.py - Railway-compatible version with PostgreSQL support
 
-import sqlite3
+import os
 import logging
 from datetime import datetime, timedelta, time, timezone
+from db_service import DatabaseService
 
 logger = logging.getLogger(__name__)
 
 class PriceService:
     """Handle all stock price data operations and market information"""
     
-    def __init__(self, db_path):
-        self.db_path = db_path
+    def __init__(self):
+        self.db = DatabaseService()
         self.market_hours = MarketHours()
-        self._init_price_tables()
-    
-    def _init_price_tables(self):
-        """Initialize price-related database tables"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Stocks table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS stocks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT NOT NULL,
-                company_name TEXT,
-                ltp REAL,
-                change REAL,
-                change_percent REAL,
-                high REAL,
-                low REAL,
-                open_price REAL,
-                prev_close REAL,
-                qty INTEGER,
-                turnover REAL,
-                trades INTEGER DEFAULT 0,
-                source TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                is_latest BOOLEAN DEFAULT TRUE
-            )
-        ''')
-        
-        # Market summary table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS market_summary (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                total_turnover REAL,
-                total_trades INTEGER,
-                total_scrips INTEGER,
-                advancing INTEGER DEFAULT 0,
-                declining INTEGER DEFAULT 0,
-                unchanged INTEGER DEFAULT 0,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                is_latest BOOLEAN DEFAULT TRUE
-            )
-        ''')
-        
-        # Price history table for tracking changes
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS price_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT NOT NULL,
-                date DATE,
-                open_price REAL,
-                high REAL,
-                low REAL,
-                close_price REAL,
-                volume INTEGER,
-                turnover REAL,
-                UNIQUE(symbol, date)
-            )
-        ''')
-        
-        # Create indexes
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_stocks_symbol_latest ON stocks(symbol, is_latest)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_stocks_timestamp ON stocks(timestamp)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_price_history_symbol_date ON price_history(symbol, date)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_market_summary_latest ON market_summary(is_latest)')
-        
-        conn.commit()
-        conn.close()
-        logger.info("Price tables initialized")
+        self.placeholder = self.db.get_placeholder()
     
     def save_stock_prices(self, stock_data_list, source_name):
         """Save stock price data to database"""
         if not stock_data_list:
             return 0
         
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
         try:
             # Mark existing records as not latest
-            cursor.execute('UPDATE stocks SET is_latest = FALSE')
-            cursor.execute('UPDATE market_summary SET is_latest = FALSE')
+            self.db.execute_query(
+                'UPDATE stocks SET is_latest = FALSE'
+            )
+            self.db.execute_query(
+                'UPDATE market_summary SET is_latest = FALSE'
+            )
             
             saved_count = 0
             advancing = declining = unchanged = 0
             total_turnover = total_trades = 0
             
+            # Prepare bulk insert data
+            stock_insert_data = []
+            
             for stock_data in stock_data_list:
-                try:
-                    if not self._validate_stock_data(stock_data):
-                        continue
-                    
-                    # Save stock data
-                    cursor.execute('''
-                        INSERT INTO stocks 
-                        (symbol, company_name, ltp, change, change_percent, high, low, 
-                         open_price, prev_close, qty, turnover, trades, source, timestamp, is_latest)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)
-                    ''', (
-                        stock_data['symbol'][:10],
-                        stock_data.get('company_name', stock_data['symbol'])[:100],
-                        stock_data['ltp'],
-                        stock_data.get('change', 0),
-                        stock_data.get('change_percent', 0),
-                        stock_data.get('high', stock_data['ltp']),
-                        stock_data.get('low', stock_data['ltp']),
-                        stock_data.get('open_price', stock_data['ltp']),
-                        stock_data.get('prev_close', stock_data['ltp']),
-                        stock_data.get('qty', 0),
-                        stock_data.get('turnover', 0),
-                        stock_data.get('trades', 0),
-                        source_name,
-                        datetime.now()
-                    ))
-                    
-                    # Update market statistics
-                    change = stock_data.get('change', 0)
-                    if change > 0:
-                        advancing += 1
-                    elif change < 0:
-                        declining += 1
-                    else:
-                        unchanged += 1
-                    
-                    total_turnover += stock_data.get('turnover', 0)
-                    total_trades += stock_data.get('trades', 0)
-                    saved_count += 1
-                    
-                except Exception as e:
-                    logger.debug(f"Error saving stock {stock_data.get('symbol', 'unknown')}: {e}")
+                if not self._validate_stock_data(stock_data):
                     continue
+                
+                # Prepare stock data for insertion
+                stock_params = (
+                    stock_data['symbol'][:10],
+                    stock_data.get('company_name', stock_data['symbol'])[:100],
+                    stock_data['ltp'],
+                    stock_data.get('change', 0),
+                    stock_data.get('change_percent', 0),
+                    stock_data.get('high', stock_data['ltp']),
+                    stock_data.get('low', stock_data['ltp']),
+                    stock_data.get('open_price', stock_data['ltp']),
+                    stock_data.get('prev_close', stock_data['ltp']),
+                    stock_data.get('qty', 0),
+                    stock_data.get('turnover', 0),
+                    stock_data.get('trades', 0),
+                    source_name,
+                    True  # is_latest
+                )
+                stock_insert_data.append(stock_params)
+                
+                # Update market statistics
+                change = stock_data.get('change', 0)
+                if change > 0:
+                    advancing += 1
+                elif change < 0:
+                    declining += 1
+                else:
+                    unchanged += 1
+                
+                total_turnover += stock_data.get('turnover', 0)
+                total_trades += stock_data.get('trades', 0)
+                saved_count += 1
+            
+            # Bulk insert stocks
+            if stock_insert_data:
+                placeholders = ','.join([self.placeholder] * 14)
+                insert_query = f'''
+                    INSERT INTO stocks 
+                    (symbol, company_name, ltp, change, change_percent, high, low, 
+                     open_price, prev_close, qty, turnover, trades, source, is_latest)
+                    VALUES ({placeholders})
+                '''
+                self.db.execute_many(insert_query, stock_insert_data)
             
             # Save market summary
             if saved_count > 0:
-                cursor.execute('''
+                summary_query = f'''
                     INSERT INTO market_summary 
                     (total_turnover, total_trades, total_scrips, advancing, declining, unchanged, is_latest)
-                    VALUES (?, ?, ?, ?, ?, ?, TRUE)
-                ''', (total_turnover, total_trades, saved_count, advancing, declining, unchanged))
+                    VALUES ({','.join([self.placeholder] * 7)})
+                '''
+                self.db.execute_query(
+                    summary_query,
+                    (total_turnover, total_trades, saved_count, advancing, declining, unchanged, True)
+                )
             
-            conn.commit()
             logger.info(f"Saved {saved_count}/{len(stock_data_list)} stocks from {source_name}")
             return saved_count
             
         except Exception as e:
             logger.error(f"Error saving stock data: {e}")
-            conn.rollback()
             return 0
-        finally:
-            conn.close()
     
     def _validate_stock_data(self, stock_data):
         """Validate stock data before saving"""
@@ -180,195 +119,98 @@ class PriceService:
     
     def get_all_stocks(self):
         """Get all latest stock data"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('''
-                SELECT symbol, company_name, ltp, change, change_percent, 
-                       high, low, open_price, prev_close, qty, turnover, 
-                       trades, source, timestamp
-                FROM stocks 
-                WHERE is_latest = TRUE
-                ORDER BY symbol
-            ''')
-            
-            columns = ['symbol', 'company_name', 'ltp', 'change', 'change_percent', 
-                      'high', 'low', 'open_price', 'prev_close', 'qty', 'turnover', 
-                      'trades', 'source', 'timestamp']
-            
-            stocks = []
-            for row in cursor.fetchall():
-                stocks.append(dict(zip(columns, row)))
-            
-            return stocks
-        finally:
-            conn.close()
+        query = '''
+            SELECT symbol, company_name, ltp, change, change_percent, 
+                   high, low, open_price, prev_close, qty, turnover, 
+                   trades, source, timestamp
+            FROM stocks 
+            WHERE is_latest = TRUE
+            ORDER BY symbol
+        '''
+        return self.db.execute_query(query, fetch='all')
     
     def get_stock_by_symbol(self, symbol):
         """Get specific stock data by symbol"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('''
-                SELECT symbol, company_name, ltp, change, change_percent, 
-                       high, low, open_price, prev_close, qty, turnover, 
-                       trades, source, timestamp
-                FROM stocks 
-                WHERE symbol = ? AND is_latest = TRUE 
-                ORDER BY timestamp DESC 
-                LIMIT 1
-            ''', (symbol.upper(),))
-            
-            row = cursor.fetchone()
-            if row:
-                columns = ['symbol', 'company_name', 'ltp', 'change', 'change_percent', 
-                          'high', 'low', 'open_price', 'prev_close', 'qty', 'turnover', 
-                          'trades', 'source', 'timestamp']
-                return dict(zip(columns, row))
-            return None
-        finally:
-            conn.close()
+        query = f'''
+            SELECT symbol, company_name, ltp, change, change_percent, 
+                   high, low, open_price, prev_close, qty, turnover, 
+                   trades, source, timestamp
+            FROM stocks 
+            WHERE symbol = {self.placeholder} AND is_latest = TRUE 
+            ORDER BY timestamp DESC 
+            LIMIT 1
+        '''
+        return self.db.execute_query(query, (symbol.upper(),), fetch='one')
     
     def get_top_gainers(self, limit=10):
         """Get top gaining stocks"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('''
-                SELECT symbol, company_name, ltp, change, change_percent
-                FROM stocks 
-                WHERE is_latest = TRUE AND change > 0
-                ORDER BY change_percent DESC 
-                LIMIT ?
-            ''', (limit,))
-            
-            gainers = []
-            for row in cursor.fetchall():
-                gainers.append({
-                    'symbol': row[0],
-                    'company_name': row[1],
-                    'ltp': row[2],
-                    'change': row[3],
-                    'change_percent': row[4]
-                })
-            return gainers
-        finally:
-            conn.close()
+        query = f'''
+            SELECT symbol, company_name, ltp, change, change_percent
+            FROM stocks 
+            WHERE is_latest = TRUE AND change > 0
+            ORDER BY change_percent DESC 
+            LIMIT {self.placeholder}
+        '''
+        return self.db.execute_query(query, (limit,), fetch='all')
     
     def get_top_losers(self, limit=10):
         """Get top losing stocks"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('''
-                SELECT symbol, company_name, ltp, change, change_percent
-                FROM stocks 
-                WHERE is_latest = TRUE AND change < 0
-                ORDER BY change_percent ASC 
-                LIMIT ?
-            ''', (limit,))
-            
-            losers = []
-            for row in cursor.fetchall():
-                losers.append({
-                    'symbol': row[0],
-                    'company_name': row[1],
-                    'ltp': row[2],
-                    'change': row[3],
-                    'change_percent': row[4]
-                })
-            return losers
-        finally:
-            conn.close()
+        query = f'''
+            SELECT symbol, company_name, ltp, change, change_percent
+            FROM stocks 
+            WHERE is_latest = TRUE AND change < 0
+            ORDER BY change_percent ASC 
+            LIMIT {self.placeholder}
+        '''
+        return self.db.execute_query(query, (limit,), fetch='all')
     
     def get_most_active(self, limit=10):
         """Get most actively traded stocks"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('''
-                SELECT symbol, company_name, ltp, turnover, qty
-                FROM stocks 
-                WHERE is_latest = TRUE
-                ORDER BY turnover DESC 
-                LIMIT ?
-            ''', (limit,))
-            
-            active = []
-            for row in cursor.fetchall():
-                active.append({
-                    'symbol': row[0],
-                    'company_name': row[1],
-                    'ltp': row[2],
-                    'turnover': row[3],
-                    'qty': row[4]
-                })
-            return active
-        finally:
-            conn.close()
+        query = f'''
+            SELECT symbol, company_name, ltp, turnover, qty
+            FROM stocks 
+            WHERE is_latest = TRUE
+            ORDER BY turnover DESC 
+            LIMIT {self.placeholder}
+        '''
+        return self.db.execute_query(query, (limit,), fetch='all')
     
     def get_market_summary(self):
         """Get market summary statistics"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        query = '''
+            SELECT total_turnover, total_trades, total_scrips, 
+                   advancing, declining, unchanged, timestamp
+            FROM market_summary 
+            WHERE is_latest = TRUE 
+            ORDER BY timestamp DESC 
+            LIMIT 1
+        '''
         
-        try:
-            cursor.execute('''
-                SELECT total_turnover, total_trades, total_scrips, 
-                       advancing, declining, unchanged, timestamp
-                FROM market_summary 
-                WHERE is_latest = TRUE 
-                ORDER BY timestamp DESC 
-                LIMIT 1
-            ''')
-            
-            row = cursor.fetchone()
-            if row:
-                return {
-                    'total_turnover': row[0],
-                    'total_trades': row[1],
-                    'total_scrips': row[2],
-                    'advancing': row[3],
-                    'declining': row[4],
-                    'unchanged': row[5],
-                    'timestamp': row[6]
-                }
-            
-            # Fallback calculation if no summary exists
-            return self._calculate_market_summary(cursor)
-        finally:
-            conn.close()
+        result = self.db.execute_query(query, fetch='one')
+        if result:
+            return result
+        
+        # Fallback calculation if no summary exists
+        return self._calculate_market_summary()
     
-    def _calculate_market_summary(self, cursor):
+    def _calculate_market_summary(self):
         """Calculate market summary from current data"""
-        cursor.execute('''
+        query = '''
             SELECT 
                 COUNT(*) as total_scrips,
-                SUM(turnover) as total_turnover,
-                SUM(trades) as total_trades,
+                COALESCE(SUM(turnover), 0) as total_turnover,
+                COALESCE(SUM(trades), 0) as total_trades,
                 SUM(CASE WHEN change > 0 THEN 1 ELSE 0 END) as advancing,
                 SUM(CASE WHEN change < 0 THEN 1 ELSE 0 END) as declining,
                 SUM(CASE WHEN change = 0 THEN 1 ELSE 0 END) as unchanged
             FROM stocks 
             WHERE is_latest = TRUE
-        ''')
+        '''
         
-        row = cursor.fetchone()
-        if row:
-            return {
-                'total_scrips': row[0] or 0,
-                'total_turnover': row[1] or 0,
-                'total_trades': row[2] or 0,
-                'advancing': row[3] or 0,
-                'declining': row[4] or 0,
-                'unchanged': row[5] or 0,
-                'timestamp': datetime.now().isoformat()
-            }
+        result = self.db.execute_query(query, fetch='one')
+        if result:
+            result['timestamp'] = datetime.now().isoformat()
+            return result
         
         return {
             'total_scrips': 0, 'total_turnover': 0, 'total_trades': 0,
@@ -376,76 +218,35 @@ class PriceService:
             'timestamp': datetime.now().isoformat()
         }
     
-    def search_stocks(self, query, limit=20):
+    def search_stocks(self, query_term, limit=20):
         """Search stocks by symbol or company name"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            search_term = f"%{query.upper()}%"
-            cursor.execute('''
-                SELECT symbol, company_name, ltp, change, change_percent
-                FROM stocks 
-                WHERE is_latest = TRUE 
-                AND (symbol LIKE ? OR UPPER(company_name) LIKE ?)
-                ORDER BY symbol
-                LIMIT ?
-            ''', (search_term, search_term, limit))
-            
-            results = []
-            for row in cursor.fetchall():
-                results.append({
-                    'symbol': row[0],
-                    'company_name': row[1],
-                    'ltp': row[2],
-                    'change': row[3],
-                    'change_percent': row[4]
-                })
-            return results
-        finally:
-            conn.close()
+        search_term = f"%{query_term.upper()}%"
+        query = f'''
+            SELECT symbol, company_name, ltp, change, change_percent
+            FROM stocks 
+            WHERE is_latest = TRUE 
+            AND (symbol LIKE {self.placeholder} OR UPPER(company_name) LIKE {self.placeholder})
+            ORDER BY symbol
+            LIMIT {self.placeholder}
+        '''
+        return self.db.execute_query(query, (search_term, search_term, limit), fetch='all')
     
     def get_stock_count(self):
         """Get total number of stocks"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('SELECT COUNT(*) FROM stocks WHERE is_latest = TRUE')
-            return cursor.fetchone()[0]
-        except:
-            return 0
-        finally:
-            conn.close()
+        query = 'SELECT COUNT(*) as count FROM stocks WHERE is_latest = TRUE'
+        result = self.db.execute_query(query, fetch='one')
+        return result['count'] if result else 0
     
     def get_price_history(self, symbol, days=30):
         """Get price history for a stock"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            since_date = datetime.now() - timedelta(days=days)
-            cursor.execute('''
-                SELECT date, open_price, high, low, close_price, volume, turnover
-                FROM price_history 
-                WHERE symbol = ? AND date >= ?
-                ORDER BY date DESC
-            ''', (symbol.upper(), since_date.date()))
-            
-            history = []
-            for row in cursor.fetchall():
-                history.append({
-                    'date': row[0],
-                    'open': row[1],
-                    'high': row[2],
-                    'low': row[3],
-                    'close': row[4],
-                    'volume': row[5],
-                    'turnover': row[6]
-                })
-            return history
-        finally:
-            conn.close()
+        since_date = datetime.now() - timedelta(days=days)
+        query = f'''
+            SELECT date, open_price, high, low, close_price, volume, turnover
+            FROM price_history 
+            WHERE symbol = {self.placeholder} AND date >= {self.placeholder}
+            ORDER BY date DESC
+        '''
+        return self.db.execute_query(query, (symbol.upper(), since_date.date()), fetch='all')
     
     def get_market_status(self):
         """Get current market status"""

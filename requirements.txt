@@ -1,9 +1,21 @@
+# Railway deployment requirements
 requests==2.31.0
 beautifulsoup4==4.12.2
 flask==2.3.3
 flask-cors==4.0.0
 schedule==1.2.0
 lxml==6.0.2
-
 urllib3==2.0.7
 
+# PostgreSQL support for Railway
+psycopg2-binary==2.9.7
+psycopg2==2.9.7
+
+# MySQL support (alternative)
+PyMySQL==1.1.0
+
+# Production server
+gunicorn==21.2.0
+
+# Environment management
+python-dotenv==1.0.0
