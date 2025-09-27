@@ -1,4 +1,4 @@
-# main.py - Fixed version with proper MySQL/SQLite support
+# main.py - Fixed version with proper MySQL/SQLite support and correct API routes
 
 import os
 import logging
@@ -425,10 +425,11 @@ class NepalStockApp:
             except Exception as e:
                 return jsonify({'success': False, 'error': str(e)}), 500
         
-        @self.app.route('/api/scrape', methods=['POST'])
+        # FIXED: Changed route from /api/scrape to /api/trigger-scrape to match Flutter expectations
+        @self.app.route('/api/trigger-scrape', methods=['POST'])
         @self.require_auth
         def trigger_scrape():
-            """Manually trigger scraping"""
+            """Manually trigger scraping (FIXED route name)"""
             try:
                 force = request.json.get('force', True) if request.is_json else True
                 
@@ -440,7 +441,7 @@ class NepalStockApp:
                     'message': f'Scraping completed successfully. {count} stocks updated.',
                     'count': count,
                     'timestamp': datetime.now().isoformat()
-                })
+                }), 201  # FIXED: Return 201 status code as expected by Flutter
             except Exception as e:
                 logger.error(f"Manual scrape failed: {e}")
                 return jsonify({
@@ -448,11 +449,11 @@ class NepalStockApp:
                     'error': str(e)
                 }), 500
         
-        # Authentication routes
-        @self.app.route('/api/auth/key-info', methods=['GET'])
+        # FIXED: Authentication routes - Flutter expects /api/key-info not /api/auth/key-info
+        @self.app.route('/api/key-info', methods=['GET'])
         @self.require_auth
         def get_key_info():
-            """Get information about the authenticated key"""
+            """Get information about the authenticated key (FIXED route path)"""
             try:
                 key_info = self.auth_service.get_key_details(request.auth_info['key_id'])
                 if key_info:
@@ -471,6 +472,13 @@ class NepalStockApp:
                     'success': False,
                     'error': str(e)
                 }), 500
+        
+        # Keep the old auth route for backward compatibility
+        @self.app.route('/api/auth/key-info', methods=['GET'])
+        @self.require_auth
+        def get_key_info_auth():
+            """Get information about the authenticated key (legacy route)"""
+            return get_key_info()
         
         @self.app.route('/api/auth/usage-stats', methods=['GET'])
         @self.require_auth
@@ -492,7 +500,7 @@ class NepalStockApp:
             except Exception as e:
                 return jsonify({'success': False, 'error': str(e)}), 500
         
-        # Admin routes
+        # Admin routes - FIXED to match Flutter expectations
         @self.app.route('/api/admin/generate-key', methods=['POST'])
         @self.require_auth
         @self.require_admin
@@ -552,31 +560,110 @@ class NepalStockApp:
                     'error': str(e)
                 }), 500
         
-        @self.app.route('/api/admin/keys/<key_id>', methods=['DELETE'])
+        # FIXED: Flutter expects DELETE at /api/admin/keys/<key_id>/delete
+        @self.app.route('/api/admin/keys/<key_id>/delete', methods=['DELETE'])
         @self.require_auth
         @self.require_admin
-        def admin_deactivate_key(key_id):
-            """Deactivate an API key (admin only)"""
+        def admin_delete_key(key_id):
+            """Delete/deactivate an API key (admin only) - FIXED route path"""
             try:
                 if key_id == request.auth_info['key_id']:
                     return jsonify({
                         'success': False,
-                        'error': 'Cannot deactivate your own key'
+                        'error': 'Cannot delete your own key'
                     }), 400
+                
+                # Check if key exists first
+                key_details = self.auth_service.get_key_details(key_id)
+                if not key_details:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Key not found'
+                    }), 404
                 
                 success = self.auth_service.deactivate_key(key_id)
                 if success:
                     return jsonify({
                         'success': True,
-                        'message': f'Key {key_id} deactivated successfully'
+                        'message': f'Key {key_id} has been deactivated successfully'
                     })
                 else:
                     return jsonify({
                         'success': False,
-                        'error': 'Key not found or already inactive'
-                    }), 404
+                        'error': 'Failed to deactivate key'
+                    }), 500
             except Exception as e:
-                return jsonify({'success': False, 'error': str(e)}), 500
+                logger.error(f"Error deleting key {key_id}: {e}")
+                return jsonify({
+                    'success': False,
+                    'error': str(e)
+                }), 500
+        
+        # Keep the old admin route for backward compatibility
+        @self.app.route('/api/admin/keys/<key_id>', methods=['DELETE'])
+        @self.require_auth
+        @self.require_admin
+        def admin_deactivate_key_legacy(key_id):
+            """Legacy route for deactivating keys"""
+            return admin_delete_key(key_id)
+        
+        # FIXED: Add the missing /api/admin/stats route that Flutter expects
+        @self.app.route('/api/admin/stats', methods=['GET'])
+        @self.require_auth
+        @self.require_admin
+        def admin_get_stats():
+            """Get system statistics (admin only) - FIXED: Added missing route"""
+            try:
+                # Get usage stats for the last 24 hours
+                usage_stats = self.auth_service.get_usage_stats(days=1)
+                total_requests_24h = sum(usage_stats.values()) if usage_stats else 0
+                
+                # Get all keys count
+                all_keys = self.auth_service.list_all_keys()
+                active_keys = len([k for k in all_keys if k['is_active']])
+                
+                # Count active sessions
+                active_sessions = 0
+                try:
+                    conn = self.db_service.get_connection()
+                    cursor = conn.cursor()
+                    if self.db_service.db_type == 'sqlite':
+                        cursor.execute('SELECT COUNT(*) FROM device_sessions WHERE is_active = 1')
+                    else:
+                        cursor.execute('SELECT COUNT(*) FROM device_sessions WHERE is_active = TRUE')
+                    result = cursor.fetchone()
+                    active_sessions = result[0] if result else 0
+                    conn.close()
+                except Exception as e:
+                    logger.warning(f"Error counting active sessions: {e}")
+                
+                # Get stock count
+                try:
+                    stock_count = self.price_service.get_stock_count()
+                except Exception as e:
+                    logger.warning(f"Error getting stock count: {e}")
+                    stock_count = 0
+                
+                stats = {
+                    'active_keys': active_keys,
+                    'total_keys': len(all_keys),
+                    'active_sessions': active_sessions,
+                    'requests_24h': total_requests_24h,
+                    'stock_count': stock_count,
+                    'timestamp': datetime.now().isoformat()
+                }
+                
+                return jsonify({
+                    'success': True,
+                    'stats': stats
+                })
+                
+            except Exception as e:
+                logger.error(f"Error getting admin stats: {e}")
+                return jsonify({
+                    'success': False,
+                    'error': str(e)
+                }), 500
         
         @self.app.route('/api/admin/usage-stats', methods=['GET'])
         @self.require_auth
