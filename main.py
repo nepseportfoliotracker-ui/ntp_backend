@@ -1,12 +1,13 @@
-# main.py - Railway-compatible Main Application File
+# main.py - Simple Railway-compatible version (works with your existing auth_service.py and price_service.py)
 
 import os
 import logging
+import sqlite3
 from datetime import datetime
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-# Import our service modules
+# Import your existing service modules (unchanged)
 from auth_service import AuthService, create_auth_decorators
 from price_service import PriceService
 from scraping_service import ScrapingService
@@ -16,20 +17,22 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class NepalStockApp:
-    """Main application class that orchestrates all services - Railway compatible"""
+    """Main application class - works with existing SQLite services"""
     
     def __init__(self):
-        # Configuration - Railway provides PORT automatically
+        # Configuration
+        # For Railway: Use DATABASE_PATH if SQLite, or fall back to default
+        self.db_path = os.environ.get('DATABASE_PATH', 'nepal_stock.db')
         self.flask_host = os.environ.get('FLASK_HOST', '0.0.0.0')
         self.flask_port = int(os.environ.get('PORT', 5000))
         self.flask_debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
         
         # Railway detection
-        self.is_railway = 'RAILWAY_ENVIRONMENT' in os.environ or 'DATABASE_URL' in os.environ
+        self.is_railway = 'RAILWAY_ENVIRONMENT' in os.environ or 'RAILWAY_PROJECT_ID' in os.environ
         
-        # Initialize services (they handle database type detection)
-        self.auth_service = AuthService()
-        self.price_service = PriceService()
+        # Initialize services with your existing code
+        self.auth_service = AuthService(self.db_path)
+        self.price_service = PriceService(self.db_path)
         self.scraping_service = ScrapingService(self.price_service)
         
         # Create Flask app
@@ -49,8 +52,9 @@ class NepalStockApp:
         """Initialize application with default data"""
         platform = "Railway" if self.is_railway else "Local"
         logger.info(f"Initializing Nepal Stock Scraper Application on {platform}...")
+        logger.info(f"Database path: {self.db_path}")
         
-        # Check for admin keys
+        # Check for admin keys (your existing code)
         self._ensure_admin_key()
         
         # Run initial data scrape
@@ -62,34 +66,38 @@ class NepalStockApp:
             logger.warning(f"Initial scrape failed: {e}")
     
     def _ensure_admin_key(self):
-        """Ensure at least one admin key exists"""
+        """Ensure at least one admin key exists - your existing code"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
         try:
-            # Use the database service instead of direct SQLite
-            query = "SELECT COUNT(*) as count FROM api_keys WHERE key_type = 'admin' AND is_active = TRUE"
-            result = self.price_service.db.execute_query(query, fetch='one')
-            admin_count = result['count'] if result else 0
+            cursor.execute('SELECT COUNT(*) FROM api_keys WHERE key_type = "admin" AND is_active = TRUE')
+            admin_count = cursor.fetchone()[0]
+        except sqlite3.OperationalError as e:
+            logger.error(f"Database table error: {e}")
+            # Tables don't exist, they'll be created by the services
+            admin_count = 0
+        finally:
+            conn.close()
+        
+        if admin_count == 0:
+            platform = "Railway" if self.is_railway else "Local"
+            logger.info(f"No admin keys found, creating initial admin key for {platform}...")
             
-            if admin_count == 0:
-                platform = "Railway" if self.is_railway else "Local"
-                logger.info(f"No admin keys found, creating initial admin key for {platform}...")
-                
-                initial_admin = self.auth_service.generate_api_key(
-                    key_type='admin',
-                    created_by=f'{platform.lower()}-system',
-                    description=f'Initial {platform} admin key'
-                )
-                if initial_admin:
-                    logger.info("=" * 60)
-                    logger.info(f"{platform.upper()} ADMIN KEY CREATED:")
-                    logger.info(f"Key ID: {initial_admin['key_id']}")
-                    logger.info(f"API Key: {initial_admin['api_key']}")
-                    logger.info("SAVE THIS KEY SECURELY - IT WON'T BE SHOWN AGAIN!")
-                    logger.info("=" * 60)
-        except Exception as e:
-            logger.error(f"Error ensuring admin key: {e}")
+            initial_admin = self.auth_service.generate_api_key(
+                key_type='admin',
+                created_by=f'{platform.lower()}-system',
+                description=f'Initial {platform} admin key'
+            )
+            if initial_admin:
+                logger.info("=" * 60)
+                logger.info(f"{platform.upper()} ADMIN KEY CREATED:")
+                logger.info(f"Key ID: {initial_admin['key_id']}")
+                logger.info(f"API Key: {initial_admin['api_key']}")
+                logger.info("SAVE THIS KEY SECURELY - IT WON'T BE SHOWN AGAIN!")
+                logger.info("=" * 60)
     
     def _register_routes(self):
-        """Register all API routes"""
+        """Register all API routes - your existing routes"""
         
         # Public routes
         @self.app.route('/api/health', methods=['GET'])
@@ -100,15 +108,14 @@ class NepalStockApp:
                 market_status = self.price_service.get_market_status()
                 last_scrape = self.scraping_service.get_last_scrape_time()
                 
-                # Determine database type
-                db_type = getattr(self.price_service.db, 'db_type', 'sqlite')
                 platform = "Railway" if self.is_railway else "Local"
                 
                 return jsonify({
                     'success': True,
                     'status': 'healthy',
                     'platform': platform,
-                    'database_type': db_type,
+                    'database_type': 'sqlite',
+                    'database_path': self.db_path,
                     'stock_count': stock_count,
                     'market_status': market_status,
                     'last_scrape': last_scrape.isoformat() if last_scrape else None,
@@ -502,11 +509,10 @@ class NepalStockApp:
     def run(self):
         """Run the Flask application"""
         platform = "Railway" if self.is_railway else "Local"
-        db_type = getattr(self.price_service.db, 'db_type', 'sqlite')
         
         logger.info(f"Starting Nepal Stock Scraper API on {platform}")
         logger.info(f"Host: {self.flask_host}, Port: {self.flask_port}")
-        logger.info(f"Database: {db_type}")
+        logger.info(f"Database: SQLite ({self.db_path})")
         
         try:
             stock_count = self.price_service.get_stock_count()
