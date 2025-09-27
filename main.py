@@ -1,4 +1,4 @@
-# main.py - Complete Railway-compatible version with MySQL/SQLite support
+# main.py - Fixed version with proper MySQL/SQLite support
 
 import os
 import logging
@@ -112,21 +112,12 @@ class NepalStockApp:
         # Railway detection
         self.is_railway = 'RAILWAY_ENVIRONMENT' in os.environ or 'RAILWAY_PROJECT_ID' in os.environ
         
-        # Initialize services based on database type
-        if self.db_service.db_type == 'mysql':
-            # For MySQL, we need to modify the services to use PyMySQL
-            logger.info("Initializing services for MySQL...")
-            self._init_mysql_tables()
-            # Pass database service to services (you'd need to modify your service classes)
-            db_path = None  # Not used for MySQL
-        else:
-            # For SQLite, use existing path-based initialization
-            logger.info("Initializing services for SQLite...")
-            db_path = self.db_service.connection_params['database']
+        # Initialize services with database service (FIXED)
+        logger.info(f"Initializing services for {self.db_service.db_type}...")
         
-        # Initialize services with existing code (works for SQLite)
-        self.auth_service = AuthService(db_path or self.db_service.connection_params['database'])
-        self.price_service = PriceService(db_path or self.db_service.connection_params['database'])
+        # Pass the database service to all service classes
+        self.auth_service = AuthService(self.db_service)
+        self.price_service = PriceService(self.db_service)
         self.scraping_service = ScrapingService(self.price_service)
         
         # Create Flask app
@@ -141,112 +132,6 @@ class NepalStockApp:
         
         # Initialize data
         self._initialize_app()
-    
-    def _init_mysql_tables(self):
-        """Initialize MySQL tables (different from SQLite)"""
-        if self.db_service.db_type != 'mysql':
-            return
-        
-        conn = self.db_service.get_connection()
-        try:
-            cursor = conn.cursor()
-            
-            logger.info("Creating MySQL tables...")
-            
-            # API Keys table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS api_keys (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    key_id VARCHAR(100) UNIQUE NOT NULL,
-                    key_hash VARCHAR(64) NOT NULL,
-                    key_type ENUM('admin', 'regular') NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    created_by VARCHAR(100),
-                    is_active BOOLEAN DEFAULT TRUE,
-                    last_used TIMESTAMP NULL,
-                    max_devices INT DEFAULT 1,
-                    description TEXT,
-                    INDEX idx_key_id (key_id)
-                )
-            ''')
-            
-            # Stocks table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS stocks (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    symbol VARCHAR(10) NOT NULL,
-                    company_name VARCHAR(200),
-                    ltp DECIMAL(10,2),
-                    change_val DECIMAL(10,2),
-                    change_percent DECIMAL(8,4),
-                    high DECIMAL(10,2),
-                    low DECIMAL(10,2),
-                    open_price DECIMAL(10,2),
-                    prev_close DECIMAL(10,2),
-                    qty INT,
-                    turnover DECIMAL(15,2),
-                    trades INT DEFAULT 0,
-                    source VARCHAR(100),
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    is_latest BOOLEAN DEFAULT TRUE,
-                    INDEX idx_symbol_latest (symbol, is_latest),
-                    INDEX idx_timestamp (timestamp)
-                )
-            ''')
-            
-            # Device sessions table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS device_sessions (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    key_id VARCHAR(100) NOT NULL,
-                    device_id VARCHAR(100) NOT NULL,
-                    device_info TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    is_active BOOLEAN DEFAULT TRUE,
-                    UNIQUE KEY unique_key_device (key_id, device_id),
-                    INDEX idx_key_device (key_id, device_id)
-                )
-            ''')
-            
-            # API logs table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS api_logs (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    key_id VARCHAR(100),
-                    device_id VARCHAR(100),
-                    endpoint VARCHAR(200),
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    ip_address VARCHAR(45),
-                    user_agent TEXT,
-                    INDEX idx_key_timestamp (key_id, timestamp)
-                )
-            ''')
-            
-            # Market summary table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS market_summary (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    total_turnover DECIMAL(18,2),
-                    total_trades INT,
-                    total_scrips INT,
-                    advancing INT DEFAULT 0,
-                    declining INT DEFAULT 0,
-                    unchanged INT DEFAULT 0,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    is_latest BOOLEAN DEFAULT TRUE,
-                    INDEX idx_latest (is_latest)
-                )
-            ''')
-            
-            conn.commit()
-            logger.info("MySQL tables created successfully")
-            
-        except Exception as e:
-            logger.error(f"Error creating MySQL tables: {e}")
-            raise
-        finally:
-            conn.close()
     
     def _initialize_app(self):
         """Initialize application with default data"""
@@ -276,27 +161,25 @@ class NepalStockApp:
     def _ensure_admin_key(self):
         """Ensure at least one admin key exists"""
         try:
-            if self.db_service.db_type == 'mysql':
-                conn = self.db_service.get_connection()
-                cursor = conn.cursor()
-                cursor.execute('SELECT COUNT(*) FROM api_keys WHERE key_type = %s AND is_active = TRUE', ('admin',))
-                result = cursor.fetchone()
-                admin_count = result[0] if result else 0
-                conn.close()
-            else:
-                # SQLite version (existing logic)
-                conn = sqlite3.connect(self.db_service.connection_params['database'])
-                cursor = conn.cursor()
-                try:
+            conn = self.db_service.get_connection()
+            try:
+                if self.db_service.db_type == 'mysql':
+                    cursor = conn.cursor()
+                    cursor.execute('SELECT COUNT(*) FROM api_keys WHERE key_type = %s AND is_active = TRUE', ('admin',))
+                    result = cursor.fetchone()
+                    admin_count = result[0] if result else 0
+                else:
+                    cursor = conn.cursor()
                     cursor.execute('SELECT COUNT(*) FROM api_keys WHERE key_type = "admin" AND is_active = TRUE')
                     admin_count = cursor.fetchone()[0]
-                except sqlite3.OperationalError:
-                    # Tables don't exist yet, they'll be created by the services
-                    admin_count = 0
-                finally:
-                    conn.close()
+            except Exception as e:
+                # Tables don't exist yet, they'll be created by the services
+                logger.info(f"Admin key check failed (tables may not exist yet): {e}")
+                admin_count = 0
+            finally:
+                conn.close()
         except Exception as e:
-            logger.error(f"Database table error: {e}")
+            logger.error(f"Database connection error: {e}")
             admin_count = 0
         
         if admin_count == 0:
