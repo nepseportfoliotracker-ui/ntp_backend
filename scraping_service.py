@@ -1,4 +1,4 @@
-# enhanced_scraping_service.py - Complete version with fixed IPO parsing
+# nepali_paisa_scraper_separate_tables.py - Version with separate tables for IPO, FPO, Rights
 
 import requests
 from bs4 import BeautifulSoup
@@ -12,11 +12,12 @@ import logging
 from datetime import datetime, timedelta
 import json
 import sqlite3
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
 class EnhancedScrapingService:
-    """Enhanced scraping service for stocks, IPOs, FPOs, and Rights shares"""
+    """Enhanced scraping service with separate tables for IPO, FPO, and Rights"""
     
     def __init__(self, price_service, ipo_service):
         self.price_service = price_service
@@ -25,41 +26,66 @@ class EnhancedScrapingService:
         self.last_ipo_scrape_time = None
         self.scrape_lock = threading.Lock()
         
-        # Stock data sources configuration
+        # Stock data sources (keeping existing stock sources)
         self.stock_sources = [
             {
-                'name': 'ShareSansar Live',
+                'name': 'ShareSansar API',
+                'url': 'https://www.sharesansar.com/api/live-trading-data',
+                'parser': self._parse_sharesansar_api,
+                'headers': {'Accept': 'application/json'}
+            },
+            {
+                'name': 'ShareSansar Live Page',
                 'url': 'https://www.sharesansar.com/live-trading',
                 'parser': self._parse_sharesansar_stocks
             },
             {
-                'name': 'ShareSansar Today',
-                'url': 'https://www.sharesansar.com/today-share-price',
-                'parser': self._parse_sharesansar_stocks
-            },
-            {
-                'name': 'MeroLagani',
+                'name': 'MeroLagani Live',
                 'url': 'https://merolagani.com/LatestMarket.aspx',
                 'parser': self._parse_merolagani
             }
         ]
         
-        # IPO/FPO/Rights data sources configuration
+        # Separate API sources for each type - Only latest 8 items each
         self.ipo_sources = [
             {
-                'name': 'ShareSansar Existing Issues',
-                'url': 'https://www.sharesansar.com/existing-issues',
-                'parser': self._parse_sharesansar_existing_issues
+                'name': 'Nepali Paisa IPO API',
+                'url': 'https://nepalipaisa.com/api/GetIpos',
+                'parser': self._parse_nepalipaisa_ipo_api,
+                'issue_type': 'IPO',
+                'table_name': 'ipos',
+                'params': {
+                    'stockSymbol': '',
+                    'pageNo': 1,
+                    'itemsPerPage': 8,  # Only get latest 8
+                    'pagePerDisplay': 5
+                }
             },
             {
-                'name': 'ShareSansar Upcoming Issues',
-                'url': 'https://www.sharesansar.com/upcoming-issue',
-                'parser': self._parse_sharesansar_upcoming_issues
+                'name': 'Nepali Paisa FPO API',
+                'url': 'https://nepalipaisa.com/api/GetFpos',
+                'parser': self._parse_nepalipaisa_fpo_api,
+                'issue_type': 'FPO',
+                'table_name': 'fpos',
+                'params': {
+                    'stockSymbol': '',
+                    'pageNo': 1,
+                    'itemsPerPage': 8,  # Only get latest 8
+                    'pagePerDisplay': 5
+                }
             },
             {
-                'name': 'MeroLagani IPO',
-                'url': 'https://merolagani.com/Ipo.aspx',
-                'parser': self._parse_merolagani_ipo
+                'name': 'Nepali Paisa Rights/Dividend API',
+                'url': 'https://nepalipaisa.com/api/GetDividendRights',
+                'parser': self._parse_nepalipaisa_rights_api,
+                'issue_type': 'Rights',
+                'table_name': 'rights_dividends',
+                'params': {
+                    'stockSymbol': '',
+                    'pageNo': 1,
+                    'itemsPerPage': 8,  # Only get latest 8
+                    'pagePerDisplay': 5
+                }
             }
         ]
         
@@ -73,14 +99,15 @@ class EnhancedScrapingService:
         # Disable SSL warnings
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         
-        # Set headers
+        # Set headers to mimic real browser
         session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate',
+            'Accept': 'application/json, text/html, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
+            'Referer': 'https://nepalipaisa.com/',
+            'X-Requested-With': 'XMLHttpRequest'
         })
         
         # Configure retries
@@ -96,6 +123,415 @@ class EnhancedScrapingService:
         
         return session
     
+    def scrape_ipo_sources(self, force=False):
+        """Scrape IPO/FPO/Rights from Nepali Paisa APIs into separate tables"""
+        with self.scrape_lock:
+            logger.info("Scraping IPO/FPO/Rights from Nepali Paisa APIs into separate tables...")
+            
+            total_saved = 0
+            successful_scrapes = []
+            
+            for source in self.ipo_sources:
+                try:
+                    logger.info(f"Scraping {source['issue_type']} from: {source['name']}")
+                    issues = self._scrape_api_source(source)
+                    
+                    if issues:
+                        # Save to specific table for this type
+                        saved_count = self.ipo_service.save_issues_to_table(
+                            issues, 
+                            source['table_name'], 
+                            source['issue_type'],
+                            source['name']
+                        )
+                        
+                        if saved_count > 0:
+                            total_saved += saved_count
+                            successful_scrapes.append({
+                                'source': source['name'],
+                                'type': source['issue_type'],
+                                'table': source['table_name'],
+                                'count': saved_count
+                            })
+                            logger.info(f"Successfully saved {saved_count} {source['issue_type']} issues to {source['table_name']} table")
+                    else:
+                        logger.warning(f"No {source['issue_type']} data found from {source['name']}")
+                
+                except Exception as e:
+                    logger.error(f"Error scraping {source['issue_type']} from {source['name']}: {e}")
+                    continue
+            
+            if total_saved > 0:
+                self.last_ipo_scrape_time = datetime.now()
+                logger.info(f"IPO scraping completed. Total saved: {total_saved} issues across separate tables")
+                for scrape in successful_scrapes:
+                    logger.info(f"  {scrape['type']}: {scrape['count']} issues in '{scrape['table']}' table")
+                
+                return total_saved
+            else:
+                logger.warning("All IPO/FPO/Rights scraping failed - no data found")
+                return 0
+    
+    def _scrape_api_source(self, source):
+        """Scrape data from Nepali Paisa API source"""
+        try:
+            # Add timestamp to prevent caching
+            params = source['params'].copy()
+            params['_'] = int(time.time() * 1000)
+            
+            logger.info(f"Requesting {source['url']} with params: {params}")
+            
+            response = self.session.get(
+                source['url'],
+                params=params,
+                timeout=30,
+                verify=False
+            )
+            
+            response.raise_for_status()
+            
+            if response.status_code == 200:
+                return source['parser'](response, source['url'])
+            
+        except Exception as e:
+            logger.error(f"Error scraping API {source['url']}: {e}")
+        
+        return []
+    
+    def _parse_nepalipaisa_ipo_api(self, response, url):
+        """Parse Nepali Paisa IPO API response"""
+        try:
+            data = response.json()
+            logger.info(f"IPO API Response structure: {type(data)}")
+            
+            issues_data = []
+            
+            # Handle the actual Nepali Paisa API response structure
+            if isinstance(data, dict) and 'result' in data:
+                result_data = data['result']
+                if isinstance(result_data, list):
+                    items = result_data
+                elif isinstance(result_data, dict) and 'data' in result_data:
+                    items = result_data['data']
+                else:
+                    logger.warning(f"Unexpected result structure in IPO API: {type(result_data)}")
+                    return []
+            elif isinstance(data, list):
+                items = data
+            else:
+                logger.warning(f"Unexpected IPO API response structure: {type(data)}")
+                return []
+            
+            logger.info(f"Processing {len(items)} IPO items (limiting to 8)")
+            
+            for item in items[:8]:  # Only process latest 8
+                try:
+                    company_name = item.get('companyName', '').strip()
+                    symbol = item.get('stockSymbol', '').strip()
+                    
+                    if not company_name:
+                        continue
+                    
+                    if not symbol:
+                        symbol = DataValidator.extract_symbol_from_company(company_name)
+                    
+                    units = DataValidator.safe_int(item.get('units', 0))
+                    price = DataValidator.safe_float(item.get('issuePrice', 100))
+                    
+                    # Parse dates
+                    open_date = self._parse_api_date(item.get('openingDate'))
+                    close_date = self._parse_api_date(item.get('closingDate'))
+                    
+                    # Get share type
+                    share_type = item.get('shareType', 'Ordinary').strip()
+                    if not share_type:
+                        share_type = 'Ordinary'
+                    
+                    # Determine status
+                    status = self._determine_status_from_api(item, open_date, close_date)
+                    
+                    issue_manager = item.get('issueManager', '').strip()
+                    
+                    issue_data = {
+                        'company_name': company_name,
+                        'symbol': symbol,
+                        'share_type': share_type,
+                        'units': units,
+                        'price': price,
+                        'total_amount': units * price if units and price else 0,
+                        'open_date': open_date,
+                        'close_date': close_date,
+                        'status': status,
+                        'issue_manager': issue_manager,
+                        'source': url,
+                        'scraped_at': datetime.now()
+                    }
+                    
+                    issues_data.append(issue_data)
+                    logger.info(f"Parsed IPO: {company_name} ({symbol}) - {share_type}")
+                    
+                except Exception as e:
+                    logger.debug(f"Error parsing IPO API item: {e}")
+                    continue
+            
+            logger.info(f"Nepali Paisa IPO API parsing completed: {len(issues_data)} IPOs")
+            return issues_data
+        
+        except Exception as e:
+            logger.error(f"Error parsing Nepali Paisa IPO API: {e}")
+            return []
+    
+    def _parse_nepalipaisa_fpo_api(self, response, url):
+        """Parse Nepali Paisa FPO API response"""
+        try:
+            data = response.json()
+            logger.info(f"FPO API Response structure: {type(data)}")
+            
+            issues_data = []
+            
+            # Handle the actual Nepali Paisa API response structure
+            if isinstance(data, dict) and 'result' in data:
+                result_data = data['result']
+                if isinstance(result_data, list):
+                    items = result_data
+                elif isinstance(result_data, dict) and 'data' in result_data:
+                    items = result_data['data']
+                else:
+                    logger.warning(f"Unexpected result structure in FPO API: {type(result_data)}")
+                    return []
+            elif isinstance(data, list):
+                items = data
+            else:
+                logger.warning(f"Unexpected FPO API response structure: {type(data)}")
+                return []
+            
+            logger.info(f"Processing {len(items)} FPO items (limiting to 8)")
+            
+            for item in items[:8]:  # Only process latest 8
+                try:
+                    company_name = item.get('companyName', '').strip()
+                    symbol = item.get('stockSymbol', '').strip()
+                    
+                    if not company_name:
+                        continue
+                    
+                    if not symbol:
+                        symbol = DataValidator.extract_symbol_from_company(company_name)
+                    
+                    units = DataValidator.safe_int(item.get('units', 0))
+                    price = DataValidator.safe_float(item.get('issuePrice', 100))
+                    
+                    # Parse dates
+                    open_date = self._parse_api_date(item.get('openingDate'))
+                    close_date = self._parse_api_date(item.get('closingDate'))
+                    
+                    # Get share type
+                    share_type = item.get('shareType', 'Ordinary').strip()
+                    if not share_type:
+                        share_type = 'Ordinary'
+                    
+                    # Determine status
+                    status = self._determine_status_from_api(item, open_date, close_date)
+                    
+                    issue_manager = item.get('issueManager', '').strip()
+                    
+                    issue_data = {
+                        'company_name': company_name,
+                        'symbol': symbol,
+                        'share_type': share_type,
+                        'units': units,
+                        'price': price,
+                        'total_amount': units * price if units and price else 0,
+                        'open_date': open_date,
+                        'close_date': close_date,
+                        'status': status,
+                        'issue_manager': issue_manager,
+                        'source': url,
+                        'scraped_at': datetime.now()
+                    }
+                    
+                    issues_data.append(issue_data)
+                    logger.info(f"Parsed FPO: {company_name} ({symbol}) - {share_type}")
+                    
+                except Exception as e:
+                    logger.debug(f"Error parsing FPO API item: {e}")
+                    continue
+            
+            logger.info(f"Nepali Paisa FPO API parsing completed: {len(issues_data)} FPOs")
+            return issues_data
+        
+        except Exception as e:
+            logger.error(f"Error parsing Nepali Paisa FPO API: {e}")
+            return []
+    
+    def _parse_nepalipaisa_rights_api(self, response, url):
+        """Parse Nepali Paisa Rights/Dividend API response"""
+        try:
+            data = response.json()
+            logger.info(f"Rights API Response structure: {type(data)}")
+            
+            issues_data = []
+            
+            # Handle the actual Nepali Paisa API response structure
+            if isinstance(data, dict) and 'result' in data:
+                result_data = data['result']
+                if isinstance(result_data, list):
+                    items = result_data
+                elif isinstance(result_data, dict) and 'data' in result_data:
+                    items = result_data['data']
+                else:
+                    logger.warning(f"Unexpected result structure in Rights API: {type(result_data)}")
+                    return []
+            elif isinstance(data, list):
+                items = data
+            else:
+                logger.warning(f"Unexpected Rights API response structure: {type(data)}")
+                return []
+            
+            logger.info(f"Processing {len(items)} Rights/Dividend items (limiting to 8)")
+            
+            for item in items[:8]:  # Only process latest 8
+                try:
+                    company_name = item.get('companyName', '').strip()
+                    symbol = item.get('stockSymbol', '').strip()
+                    
+                    if not company_name:
+                        continue
+                    
+                    if not symbol:
+                        symbol = DataValidator.extract_symbol_from_company(company_name)
+                    
+                    # Check if this is a rights share issue
+                    right_share = item.get('rightShare', '').strip()
+                    bonus_share = item.get('bonusShare', '').strip()
+                    cash_dividend = item.get('cashDividend', '').strip()
+                    
+                    # Determine issue type based on available data
+                    issue_type = 'Rights'
+                    if right_share and right_share not in ['', '0', '0%', 'N/A']:
+                        issue_type = 'Rights'
+                    elif bonus_share or cash_dividend:
+                        issue_type = 'Dividend'
+                    
+                    # Parse dates
+                    book_close_date = self._parse_api_date(item.get('bookCloseDate') or item.get('bonusBookCloseDate') or item.get('rightBookCloseDate'))
+                    
+                    # For rights/dividend, we use book close date as reference
+                    status = 'closed'
+                    if book_close_date:
+                        current_date = datetime.now().date()
+                        if current_date < book_close_date:
+                            status = 'coming_soon'
+                        elif current_date == book_close_date:
+                            status = 'open'
+                    
+                    fiscal_year = item.get('fiscalYear', '').strip()
+                    
+                    issue_data = {
+                        'company_name': company_name,
+                        'symbol': symbol,
+                        'issue_type': issue_type,  # Rights or Dividend
+                        'rights_ratio': right_share,
+                        'bonus_share': bonus_share,
+                        'cash_dividend': cash_dividend,
+                        'book_close_date': book_close_date,
+                        'fiscal_year': fiscal_year,
+                        'status': status,
+                        'source': url,
+                        'scraped_at': datetime.now()
+                    }
+                    
+                    issues_data.append(issue_data)
+                    logger.info(f"Parsed Rights/Dividend: {company_name} ({symbol}) - {issue_type}")
+                    
+                except Exception as e:
+                    logger.debug(f"Error parsing Rights API item: {e}")
+                    continue
+            
+            logger.info(f"Nepali Paisa Rights API parsing completed: {len(issues_data)} Rights/Dividend items")
+            return issues_data
+        
+        except Exception as e:
+            logger.error(f"Error parsing Nepali Paisa Rights API: {e}")
+            return []
+    
+    def _parse_api_date(self, date_str):
+        """Parse date from API response"""
+        if not date_str or date_str in ['', 'null', None]:
+            return None
+        
+        try:
+            # Common API date formats
+            date_formats = [
+                '%Y-%m-%d',
+                '%Y-%m-%dT%H:%M:%S',
+                '%Y-%m-%dT%H:%M:%S.%f',
+                '%m/%d/%Y',
+                '%d/%m/%Y',
+                '%Y/%m/%d'
+            ]
+            
+            date_str = str(date_str).strip()
+            
+            for fmt in date_formats:
+                try:
+                    parsed_date = datetime.strptime(date_str, fmt)
+                    return parsed_date.date()
+                except ValueError:
+                    continue
+            
+            # If no format matches, try to extract date parts
+            date_match = re.search(r'(\d{4})-(\d{1,2})-(\d{1,2})', date_str)
+            if date_match:
+                year, month, day = map(int, date_match.groups())
+                return datetime(year, month, day).date()
+            
+            logger.debug(f"Could not parse date: {date_str}")
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Error parsing API date '{date_str}': {e}")
+            return None
+    
+    def _determine_status_from_api(self, item, open_date, close_date):
+        """Determine status from API item and dates"""
+        # First check if API provides status directly
+        api_status = item.get('status', '').lower().strip()
+        
+        if api_status in ['open', 'active', 'ongoing']:
+            return 'open'
+        elif api_status in ['closed', 'ended', 'finished']:
+            return 'closed'
+        elif api_status in ['coming', 'upcoming', 'announced']:
+            return 'coming_soon'
+        
+        # Fallback to date-based determination
+        return self._determine_status_from_dates(open_date, close_date)
+    
+    def _determine_status_from_dates(self, open_date, close_date):
+        """Determine status from open and close dates"""
+        current_date = datetime.now().date()
+        
+        if open_date and close_date:
+            if current_date < open_date:
+                return 'coming_soon'
+            elif open_date <= current_date <= close_date:
+                return 'open'
+            else:
+                return 'closed'
+        elif open_date:
+            if current_date < open_date:
+                return 'coming_soon'
+            else:
+                estimated_close = open_date + timedelta(days=7)
+                if current_date <= estimated_close:
+                    return 'open'
+                else:
+                    return 'closed'
+        else:
+            return 'coming_soon'
+    
+    # Keep existing stock parsing methods unchanged
     def scrape_all_sources(self, force=False):
         """Scrape stock data from all available sources"""
         with self.scrape_lock:
@@ -109,7 +545,7 @@ class EnhancedScrapingService:
                     logger.info(f"Scraping stocks from: {source['name']}")
                     stocks = self._scrape_source(source)
                     
-                    if stocks and len(stocks) >= 50:  # Minimum threshold
+                    if stocks and len(stocks) >= 20:
                         count = self.price_service.save_stock_prices(stocks, source['name'])
                         if count > 0:
                             successful_scrapes.append({
@@ -131,119 +567,43 @@ class EnhancedScrapingService:
                 logger.info(f"Stock scraping completed successfully. {total_stocks} stocks updated.")
                 return total_stocks
             else:
-                logger.warning("All stock scraping sources failed, using sample data")
-                return self._populate_sample_data()
-    
-    def scrape_ipo_sources(self, force=False):
-        """Scrape IPO/FPO/Rights data from all available sources with fallback"""
-        with self.scrape_lock:
-            logger.info("Starting IPO/FPO/Rights data scraping from all sources...")
-            
-            successful_scrapes = []
-            total_issues = 0
-            
-            for source in self.ipo_sources:
-                try:
-                    logger.info(f"Scraping IPO data from: {source['name']}")
-                    issues = self._scrape_source(source)
-                    
-                    if issues:
-                        logger.info(f"Raw issues found from {source['name']}: {len(issues)}")
-                        
-                        # Filter for open issues (current date between open and close dates)
-                        open_issues = self._filter_open_issues(issues)
-                        
-                        if open_issues:
-                            count = self.ipo_service.save_issues(open_issues, source['name'])
-                            if count > 0:
-                                successful_scrapes.append({
-                                    'source': source['name'],
-                                    'count': count
-                                })
-                                total_issues += count
-                                logger.info(f"Successfully scraped {count} open issues from {source['name']}")
-                        else:
-                            logger.info(f"No open issues found from {source['name']}")
-                    else:
-                        logger.warning(f"No data from {source['name']}")
-                
-                except Exception as e:
-                    logger.error(f"Error scraping IPO data from {source['name']}: {e}")
-                    continue
-            
-            if successful_scrapes:
-                self.last_ipo_scrape_time = datetime.now()
-                logger.info(f"IPO scraping completed successfully. {total_issues} issues updated.")
-                return total_issues
-            else:
-                logger.warning("All IPO scraping sources failed, creating sample data...")
-                return self._create_sample_ipo_data()
-    
-    def _filter_open_issues(self, issues):
-        """Filter issues that are currently open (between opening and closing dates)"""
-        open_issues = []
-        current_date = datetime.now().date()
-        
-        for issue in issues:
-            try:
-                open_date = issue.get('open_date')
-                close_date = issue.get('close_date')
-                
-                if open_date and close_date:
-                    # Parse dates if they're strings
-                    if isinstance(open_date, str):
-                        open_date = datetime.strptime(open_date, '%Y-%m-%d').date()
-                    if isinstance(close_date, str):
-                        close_date = datetime.strptime(close_date, '%Y-%m-%d').date()
-                    
-                    # Check if current date is between open and close dates
-                    if open_date <= current_date <= close_date:
-                        issue['status'] = 'open'
-                        open_issues.append(issue)
-                    elif current_date < open_date:
-                        issue['status'] = 'coming_soon'
-                        # Include coming soon issues that start within next 30 days
-                        if (open_date - current_date).days <= 30:
-                            open_issues.append(issue)
-                    else:
-                        issue['status'] = 'closed'
-                        # Include recently closed issues (within last 7 days)
-                        if (current_date - close_date).days <= 7:
-                            open_issues.append(issue)
-                else:
-                    # If no dates available, include as coming soon
-                    issue['status'] = 'coming_soon'
-                    open_issues.append(issue)
-                        
-            except Exception as e:
-                logger.warning(f"Error filtering issue dates: {e}")
-                # Include issues with date parsing errors as coming soon
-                issue['status'] = 'coming_soon'
-                open_issues.append(issue)
-                continue
-                
-        return open_issues
+                logger.warning("All stock scraping sources failed")
+                return 0
     
     def _scrape_source(self, source):
-        """Scrape data from a single source"""
+        """Scrape data from a single source (for stocks)"""
         data = []
         
-        # Try with SSL verification first, then without
+        headers = self.session.headers.copy()
+        if 'headers' in source:
+            headers.update(source['headers'])
+        
         for verify_ssl in [True, False]:
             try:
-                response = self.session.get(
-                    source['url'], 
-                    timeout=30,
-                    verify=verify_ssl
-                )
+                if 'data_params' in source:
+                    response = self.session.post(
+                        source['url'], 
+                        data=source['data_params'],
+                        headers=headers,
+                        timeout=30,
+                        verify=verify_ssl
+                    )
+                else:
+                    response = self.session.get(
+                        source['url'], 
+                        headers=headers,
+                        timeout=30,
+                        verify=verify_ssl
+                    )
+                
                 response.raise_for_status()
                 
-                if response.status_code == 200 and len(response.content) > 1000:
-                    data = source['parser'](response.content, source['url'])
+                if response.status_code == 200:
+                    data = source['parser'](response, source['url'])
                     if data:
                         return data
                 
-                break  # Break verify_ssl loop if successful
+                break
                 
             except requests.exceptions.SSLError:
                 if verify_ssl:
@@ -254,680 +614,244 @@ class EnhancedScrapingService:
                     break
             except Exception as e:
                 logger.warning(f"Error with {source['url']} (SSL verify: {verify_ssl}): {e}")
-                break
+                if not verify_ssl:
+                    break
         
         return data
     
-    def _parse_sharesansar_stocks(self, content, url):
+    def _parse_sharesansar_api(self, response, url):
+        """Parse ShareSansar API response (if available)"""
+        try:
+            if response.headers.get('content-type', '').startswith('application/json'):
+                data = response.json()
+                stocks_data = []
+                
+                if isinstance(data, dict):
+                    if 'data' in data:
+                        stock_list = data['data']
+                    elif 'result' in data:
+                        stock_list = data['result']
+                    else:
+                        stock_list = [data]
+                elif isinstance(data, list):
+                    stock_list = data
+                else:
+                    logger.warning("Unexpected API response format")
+                    return []
+                
+                for item in stock_list:
+                    try:
+                        symbol = DataValidator.clean_symbol(item.get('symbol', ''))
+                        ltp = DataValidator.safe_float(item.get('ltp', 0))
+                        change = DataValidator.safe_float(item.get('change', 0))
+                        qty = DataValidator.safe_int(item.get('totalQty', 1000))
+                        
+                        if DataValidator.is_valid_symbol(symbol) and DataValidator.is_valid_price(ltp):
+                            stock_data = self._build_stock_data(symbol, ltp, change, qty, url)
+                            stocks_data.append(stock_data)
+                    
+                    except Exception as e:
+                        logger.debug(f"Error parsing API stock item: {e}")
+                        continue
+                
+                logger.info(f"ShareSansar API parsing completed: {len(stocks_data)} stocks")
+                return stocks_data
+            
+            else:
+                return self._parse_sharesansar_stocks(response, url)
+        
+        except Exception as e:
+            logger.error(f"Error parsing ShareSansar API: {e}")
+            return []
+    
+    def _parse_sharesansar_stocks(self, response, url):
         """Parse ShareSansar website stock data"""
-        soup = BeautifulSoup(content, 'html.parser')
+        soup = BeautifulSoup(response.content, 'html.parser')
         stocks_data = []
         
         try:
-            # Look for tables containing stock data
-            tables = soup.find_all('table')
+            stock_table = None
             
-            for table in tables:
-                rows = table.find_all('tr')
-                if len(rows) < 10:  # Skip small tables
+            stock_table = soup.find('table', {'id': re.compile(r'live|stock|trading', re.I)}) or \
+                         soup.find('table', {'class': re.compile(r'live|stock|trading', re.I)})
+            
+            if not stock_table:
+                tables = soup.find_all('table')
+                if tables:
+                    stock_table = max(tables, key=lambda t: len(t.find_all('tr')))
+            
+            if not stock_table:
+                logger.warning("No stock table found in ShareSansar")
+                return stocks_data
+            
+            rows = stock_table.find_all('tr')
+            if len(rows) < 10:
+                logger.warning(f"Insufficient rows in stock table: {len(rows)}")
+                return stocks_data
+            
+            header_row = rows[0]
+            headers = [th.get_text(strip=True).lower() for th in header_row.find_all(['th', 'td'])]
+            
+            symbol_idx = self._find_column_index(headers, ['symbol', 'stock', 'scrip', 'company'])
+            ltp_idx = self._find_column_index(headers, ['ltp', 'price', 'last', 'current'])
+            change_idx = self._find_column_index(headers, ['change', 'diff', '+/-'])
+            qty_idx = self._find_column_index(headers, ['qty', 'volume', 'turnover'])
+            
+            if symbol_idx < 0 or ltp_idx < 0:
+                logger.warning(f"Required columns not found. Symbol: {symbol_idx}, LTP: {ltp_idx}")
+                return stocks_data
+            
+            for i, row in enumerate(rows[1:], 1):
+                cols = row.find_all(['td', 'th'])
+                if len(cols) <= max(symbol_idx, ltp_idx):
                     continue
                 
-                # Check if this looks like a stock table
-                header_row = rows[0] if rows else None
-                if not header_row:
-                    continue
-                
-                header_text = header_row.get_text().lower()
-                if not any(keyword in header_text for keyword in ['symbol', 'ltp', 'price', 'change']):
-                    continue
-                
-                logger.info("Found stock table in ShareSansar")
-                
-                # Get column indices
-                header_cells = header_row.find_all(['th', 'td'])
-                headers = [cell.get_text(strip=True).lower() for cell in header_cells]
-                
-                symbol_idx = self._find_column_index(headers, ['symbol', 'stock', 'scrip'])
-                ltp_idx = self._find_column_index(headers, ['ltp', 'price', 'last'])
-                change_idx = self._find_column_index(headers, ['change', 'diff'])
-                qty_idx = self._find_column_index(headers, ['qty', 'volume'])
-                
-                if symbol_idx < 0 or ltp_idx < 0:
-                    continue
-                
-                # Parse data rows
-                for row in rows[1:]:
-                    cols = row.find_all(['td', 'th'])
-                    if len(cols) <= max(symbol_idx, ltp_idx):
+                try:
+                    symbol_cell = cols[symbol_idx]
+                    symbol_link = symbol_cell.find('a')
+                    if symbol_link:
+                        symbol = DataValidator.clean_symbol(symbol_link.get_text(strip=True))
+                    else:
+                        symbol = DataValidator.clean_symbol(symbol_cell.get_text(strip=True))
+                    
+                    ltp = DataValidator.safe_float(cols[ltp_idx].get_text(strip=True))
+                    
+                    if not DataValidator.is_valid_symbol(symbol) or not DataValidator.is_valid_price(ltp):
                         continue
                     
-                    try:
-                        symbol = DataValidator.clean_symbol(cols[symbol_idx].get_text(strip=True))
-                        ltp = DataValidator.safe_float(cols[ltp_idx].get_text(strip=True))
-                        
-                        if not DataValidator.is_valid_symbol(symbol) or not DataValidator.is_valid_price(ltp):
-                            continue
-                        
-                        change = 0.0
-                        if change_idx >= 0 and len(cols) > change_idx:
-                            change = DataValidator.safe_float(cols[change_idx].get_text(strip=True))
-                        
-                        qty = 1000
-                        if qty_idx >= 0 and len(cols) > qty_idx:
-                            qty = DataValidator.safe_int(cols[qty_idx].get_text(strip=True))
-                            if qty <= 0:
-                                qty = 1000
-                        
-                        # Build stock data
-                        stock_data = self._build_stock_data(symbol, ltp, change, qty, url)
-                        stocks_data.append(stock_data)
-                        
-                    except Exception as e:
-                        logger.debug(f"Error parsing ShareSansar stock row: {e}")
-                        continue
-                
-                if stocks_data:
-                    logger.info(f"ShareSansar stock parsing found {len(stocks_data)} stocks")
-                    return stocks_data
+                    change = 0.0
+                    if change_idx >= 0 and len(cols) > change_idx:
+                        change = DataValidator.safe_float(cols[change_idx].get_text(strip=True))
+                    
+                    qty = 1000
+                    if qty_idx >= 0 and len(cols) > qty_idx:
+                        qty = DataValidator.safe_int(cols[qty_idx].get_text(strip=True))
+                        if qty <= 0:
+                            qty = 1000
+                    
+                    stock_data = self._build_stock_data(symbol, ltp, change, qty, url)
+                    stocks_data.append(stock_data)
+                    
+                except Exception as e:
+                    logger.debug(f"Error parsing ShareSansar stock row {i}: {e}")
+                    continue
+            
+            logger.info(f"ShareSansar stock parsing completed: {len(stocks_data)} stocks")
+            return stocks_data
         
         except Exception as e:
             logger.error(f"Error in ShareSansar stock parsing: {e}")
-        
-        return stocks_data
-    
-    def _parse_sharesansar_existing_issues(self, content, url):
-        """Targeted ShareSansar existing issues parser"""
-        soup = BeautifulSoup(content, 'html.parser')
-        issues_data = []
-        
-        try:
-            logger.info("Parsing ShareSansar existing issues page with targeted approach")
-            
-            # Look for ALL tables and try to parse each one
-            tables = soup.find_all('table')
-            logger.info(f"Found {len(tables)} tables to analyze")
-            
-            for table_idx, table in enumerate(tables):
-                rows = table.find_all('tr')
-                if len(rows) < 2:
-                    continue
-                
-                logger.info(f"Processing table {table_idx + 1} with {len(rows)} rows")
-                
-                # Get all text from the table to check for IPO-related content
-                table_text = table.get_text().lower()
-                
-                # Check if table contains IPO company names or related terms
-                ipo_indicators = [
-                    'jhapa energy', 'sagar distillery', 'reliance spinning', 'bungal hydro',
-                    'shreenagar agritech', 'bandipur cable', 'mabilung energy',
-                    'units', 'price', 'opening date', 'closing date', 'rs.', 'limited', 'symbol'
-                ]
-                
-                has_ipo_content = any(indicator in table_text for indicator in ipo_indicators)
-                
-                if has_ipo_content:
-                    logger.info(f"Table {table_idx + 1} contains IPO-related content, parsing...")
-                    
-                    # Try to extract data from this table using multiple strategies
-                    extracted = self._extract_from_any_table(table, url, table_idx + 1)
-                    if extracted:
-                        issues_data.extend(extracted)
-                        logger.info(f"Successfully extracted {len(extracted)} issues from table {table_idx + 1}")
-                else:
-                    logger.debug(f"Table {table_idx + 1} doesn't appear to contain IPO data")
-            
-            # Fallback: Try to extract from any div that might contain structured data
-            if not issues_data:
-                logger.info("No table data found, trying div-based extraction...")
-                divs = soup.find_all('div')
-                
-                for div in divs:
-                    div_text = div.get_text()
-                    if any(company in div_text for company in ['Jhapa Energy', 'Sagar Distillery', 'Reliance Spinning']):
-                        extracted = self._extract_from_div_content(div, url)
-                        if extracted:
-                            issues_data.extend(extracted)
-            
-            logger.info(f"ShareSansar existing issues parsing completed: {len(issues_data)} issues found")
-            return issues_data
-            
-        except Exception as e:
-            logger.error(f"Error in ShareSansar existing issues parsing: {e}")
-            import traceback
-            logger.error(f"Full traceback: {traceback.format_exc()}")
-            return []
-
-    def _extract_from_any_table(self, table, url, table_number):
-        """Extract IPO data from any table structure"""
-        issues_data = []
-        
-        try:
-            rows = table.find_all('tr')
-            
-            # Log the first few rows for debugging
-            for i, row in enumerate(rows[:3]):
-                cols = row.find_all(['td', 'th'])
-                row_text = [col.get_text(strip=True) for col in cols]
-                logger.debug(f"Table {table_number} Row {i}: {row_text}")
-            
-            # Skip header row and process data rows
-            data_rows = rows[1:] if len(rows) > 1 else rows
-            
-            for row_idx, row in enumerate(data_rows):
-                cols = row.find_all(['td', 'th'])
-                
-                if len(cols) < 3:  # Need at least 3 columns for meaningful data
-                    continue
-                
-                # Extract all cell texts
-                cell_texts = [col.get_text(strip=True) for col in cols]
-                logger.debug(f"Table {table_number} processing row: {cell_texts}")
-                
-                # Look for company name (longest text that looks like a company)
-                company_name = None
-                company_col = -1
-                
-                for i, text in enumerate(cell_texts):
-                    if len(text) > 10 and any(word in text for word in ['Limited', 'Ltd', 'Energy', 'Bank', 'Hydro', 'Company', 'Distillery', 'Agritech', 'Spinning', 'Cable']):
-                        company_name = text
-                        company_col = i
-                        break
-                
-                # If no clear company name found, try the first non-numeric column
-                if not company_name:
-                    for i, text in enumerate(cell_texts):
-                        if len(text) > 5 and not text.replace(',', '').replace('.', '').replace('-', '').isdigit():
-                            # Skip common header words
-                            if text.lower() not in ['company', 'symbol', 'units', 'price', 'open', 'close', 'status']:
-                                company_name = text
-                                company_col = i
-                                break
-                
-                if not company_name:
-                    continue
-                
-                logger.info(f"Table {table_number}: Found potential company '{company_name}' in column {company_col}")
-                
-                # Look for numerical data (units, prices)
-                units = 0
-                price = 0.0
-                
-                for text in cell_texts:
-                    # Look for large numbers (likely units) - must have commas for thousands
-                    if ',' in text and text.replace(',', '').isdigit():
-                        potential_units = DataValidator.safe_int(text)
-                        if potential_units > 1000:  # Reasonable for IPO units
-                            units = potential_units
-                    
-                    # Look for prices (smaller numbers, possibly with decimals)
-                    elif text.replace('.', '').replace(',', '').isdigit() and ',' not in text:
-                        potential_price = DataValidator.safe_float(text)
-                        if 10 <= potential_price <= 2000:  # Reasonable price range
-                            price = potential_price
-                
-                # Look for dates
-                open_date = None
-                close_date = None
-                
-                for text in cell_texts:
-                    if re.search(r'\d{4}[-/]\d{1,2}[-/]\d{1,2}', text):
-                        parsed_date = self._parse_nepali_date(text)
-                        if parsed_date:
-                            if not open_date:
-                                open_date = parsed_date
-                            elif not close_date:
-                                close_date = parsed_date
-                
-                # Determine issue type and status
-                issue_type = 'IPO'  # Default
-                status = 'unknown'
-                
-                row_text_combined = ' '.join(cell_texts).lower()
-                if 'fpo' in row_text_combined:
-                    issue_type = 'FPO'
-                elif 'right' in row_text_combined:
-                    issue_type = 'Rights'
-                
-                # Check for "Coming Soon" status
-                if 'coming soon' in row_text_combined or not (open_date and close_date):
-                    status = 'coming_soon'
-                else:
-                    # Determine from dates
-                    current_date = datetime.now().date()
-                    if open_date and close_date:
-                        if open_date <= current_date <= close_date:
-                            status = 'open'
-                        elif current_date < open_date:
-                            status = 'coming_soon'
-                        else:
-                            status = 'closed'
-                
-                # Create issue data
-                issue_data = {
-                    'company_name': company_name,
-                    'symbol': DataValidator.extract_symbol_from_company(company_name),
-                    'issue_type': issue_type,
-                    'units': units,
-                    'price': price,
-                    'total_amount': units * price if units and price else 0,
-                    'open_date': open_date,
-                    'close_date': close_date,
-                    'status': status,
-                    'source': url,
-                    'scraped_at': datetime.now()
-                }
-                
-                issues_data.append(issue_data)
-                logger.info(f"Table {table_number}: Extracted issue - {company_name} ({issue_type}) Status: {status}")
-            
-            return issues_data
-            
-        except Exception as e:
-            logger.error(f"Error extracting from table {table_number}: {e}")
-            return []
-
-    def _extract_from_div_content(self, div, url):
-        """Extract IPO data from div content using text patterns"""
-        issues_data = []
-        
-        try:
-            text = div.get_text(separator=' ', strip=True)
-            
-            # Known IPO companies from your screenshot
-            known_companies = [
-                'Jhapa Energy Limited',
-                'Sagar Distillery Limited', 
-                'Shreenagar Agritech Industries Limited',
-                'Reliance Spinning Mills',
-                'Bungal Hydro Limited',
-                'Bandipur Cable Car and Tourism Limited',
-                'Mabilung Energy Limited'
-            ]
-            
-            for company in known_companies:
-                if company in text:
-                    # Try to extract surrounding data
-                    company_index = text.find(company)
-                    context = text[max(0, company_index-100):company_index+200]
-                    
-                    # Extract numerical data from context
-                    units_match = re.search(r'(\d{1,3}(?:,\d{3})*)', context)
-                    price_match = re.search(r'(\d{1,4}(?:\.\d{2})?)', context)
-                    
-                    issue_data = {
-                        'company_name': company,
-                        'symbol': DataValidator.extract_symbol_from_company(company),
-                        'issue_type': 'IPO',
-                        'units': DataValidator.safe_int(units_match.group(1) if units_match else '0'),
-                        'price': DataValidator.safe_float(price_match.group(1) if price_match else '0'),
-                        'total_amount': 0,
-                        'open_date': None,
-                        'close_date': None,
-                        'status': 'coming_soon',
-                        'source': url,
-                        'scraped_at': datetime.now()
-                    }
-                    
-                    issues_data.append(issue_data)
-                    logger.info(f"Extracted from div content: {company}")
-            
-            return issues_data
-            
-        except Exception as e:
-            logger.debug(f"Error extracting from div: {e}")
-            return []
-
-    def _create_sample_ipo_data(self):
-        """Create sample IPO data based on known current issues"""
-        logger.info("Creating sample IPO data...")
-        
-        sample_issues = [
-            {
-                'company_name': 'Jhapa Energy Limited',
-                'symbol': 'JEL',
-                'issue_type': 'IPO',
-                'units': 473336,
-                'price': 100.0,
-                'total_amount': 47333600,
-                'open_date': datetime(2025, 9, 5).date(),
-                'close_date': datetime(2025, 9, 15).date(),
-                'status': 'closed',
-                'source': 'Sample Data',
-                'scraped_at': datetime.now()
-            },
-            {
-                'company_name': 'Sagar Distillery Limited',
-                'symbol': 'SDLTD',
-                'issue_type': 'IPO',
-                'units': 1190640,
-                'price': 100.0,
-                'total_amount': 119064000,
-                'open_date': datetime(2025, 9, 15).date(),
-                'close_date': datetime(2025, 9, 21).date(),
-                'status': 'closed',
-                'source': 'Sample Data',
-                'scraped_at': datetime.now()
-            },
-            {
-                'company_name': 'Shreenagar Agritech Industries Limited',
-                'symbol': 'SHREE',
-                'issue_type': 'IPO',
-                'units': 3262500,
-                'price': 100.0,
-                'total_amount': 326250000,
-                'open_date': None,
-                'close_date': None,
-                'status': 'coming_soon',
-                'source': 'Sample Data',
-                'scraped_at': datetime.now()
-            },
-            {
-                'company_name': 'Reliance Spinning Mills',
-                'symbol': 'RSM',
-                'issue_type': 'IPO',
-                'units': 1155960,
-                'price': 820.80,
-                'total_amount': 948651168,
-                'open_date': None,
-                'close_date': None,
-                'status': 'coming_soon',
-                'source': 'Sample Data',
-                'scraped_at': datetime.now()
-            },
-            {
-                'company_name': 'Bungal Hydro Limited',
-                'symbol': 'BLHL',
-                'issue_type': 'IPO',
-                'units': 1701500,
-                'price': 100.0,
-                'total_amount': 170150000,
-                'open_date': datetime(2025, 9, 1).date(),
-                'close_date': datetime(2025, 9, 4).date(),
-                'status': 'closed',
-                'source': 'Sample Data',
-                'scraped_at': datetime.now()
-            },
-            {
-                'company_name': 'Bandipur Cable Car and Tourism Limited',
-                'symbol': 'BCTL',
-                'issue_type': 'IPO',
-                'units': 4341080,
-                'price': 100.0,
-                'total_amount': 434108000,
-                'open_date': datetime(2025, 8, 27).date(),
-                'close_date': datetime(2025, 8, 31).date(),
-                'status': 'closed',
-                'source': 'Sample Data',
-                'scraped_at': datetime.now()
-            },
-            {
-                'company_name': 'Mabilung Energy Limited',
-                'symbol': 'MBEL',
-                'issue_type': 'IPO',
-                'units': 1248904,
-                'price': 100.0,
-                'total_amount': 124890400,
-                'open_date': datetime(2025, 8, 11).date(),
-                'close_date': datetime(2025, 8, 14).date(),
-                'status': 'closed',
-                'source': 'Sample Data',
-                'scraped_at': datetime.now()
-            }
-        ]
-        
-        # Save sample data to database
-        saved_count = self.ipo_service.save_issues(sample_issues, 'Sample Data')
-        logger.info(f"Created {saved_count} sample IPO issues")
-        return saved_count
-    
-    def _parse_sharesansar_upcoming_issues(self, content, url):
-        """Parse ShareSansar upcoming issues page"""
-        soup = BeautifulSoup(content, 'html.parser')
-        issues_data = []
-        
-        try:
-            logger.info("Parsing ShareSansar upcoming issues page")
-            
-            # Use similar approach as existing issues
-            tables = soup.find_all('table')
-            
-            for table in tables:
-                rows = table.find_all('tr')
-                if len(rows) < 2:
-                    continue
-                
-                table_text = table.get_text().lower()
-                if 'upcoming' in table_text or 'expected' in table_text or 'coming' in table_text:
-                    extracted = self._extract_from_any_table(table, url, 0)
-                    
-                    # Mark all as coming soon
-                    for issue in extracted:
-                        issue['status'] = 'coming_soon'
-                        if not issue.get('open_date'):
-                            issue['open_date'] = None
-                        if not issue.get('close_date'):
-                            issue['close_date'] = None
-                    
-                    issues_data.extend(extracted)
-            
-            logger.info(f"ShareSansar upcoming issues parsing completed: {len(issues_data)} issues found")
-            return issues_data
-            
-        except Exception as e:
-            logger.error(f"Error in ShareSansar upcoming issues parsing: {e}")
             return []
     
-    def _parse_merolagani_ipo(self, content, url):
-        """Parse MeroLagani IPO page"""
-        soup = BeautifulSoup(content, 'html.parser')
-        issues_data = []
-        
-        try:
-            logger.info("Parsing MeroLagani IPO page")
-            
-            # Look for tables with IPO data
-            tables = soup.find_all('table')
-            
-            for table in tables:
-                table_text = table.get_text().lower()
-                if 'ipo' in table_text or 'company' in table_text:
-                    extracted = self._extract_from_any_table(table, url, 0)
-                    issues_data.extend(extracted)
-            
-            logger.info(f"MeroLagani IPO parsing completed: {len(issues_data)} issues found")
-            return issues_data
-            
-        except Exception as e:
-            logger.error(f"Error in MeroLagani IPO parsing: {e}")
-            return []
-    
-    def _parse_merolagani(self, content, url):
+    def _parse_merolagani(self, response, url):
         """Parse MeroLagani website stock data"""
-        soup = BeautifulSoup(content, 'html.parser')
+        soup = BeautifulSoup(response.content, 'html.parser')
         stocks_data = []
         
         try:
-            # Look for main market data table
-            table = soup.find('table', {'id': 'headtable'}) or soup.find('table', class_='table')
+            stock_table = soup.find('table', {'id': 'headtable'}) or \
+                         soup.find('table', class_='table') or \
+                         soup.find('table', class_=re.compile(r'stock|market', re.I))
             
-            if not table:
-                # Try all tables
+            if not stock_table:
                 tables = soup.find_all('table')
-                for t in tables:
-                    rows = t.find_all('tr')
-                    if len(rows) > 20:  # Large table likely to be stock data
-                        table = t
-                        break
+                if tables:
+                    valid_tables = [t for t in tables if len(t.find_all('tr')) > 10]
+                    if valid_tables:
+                        stock_table = max(valid_tables, key=lambda t: len(t.find_all('tr')))
             
-            if table:
-                rows = table.find_all('tr')
-                if len(rows) < 2:
-                    return stocks_data
+            if not stock_table:
+                logger.warning("No stock table found in MeroLagani")
+                return stocks_data
+            
+            rows = stock_table.find_all('tr')
+            if len(rows) < 2:
+                logger.warning(f"Insufficient rows in MeroLagani table: {len(rows)}")
+                return stocks_data
+            
+            for i, row in enumerate(rows[1:], 1):
+                cols = row.find_all(['td', 'th'])
+                if len(cols) < 3:
+                    continue
                 
-                # Parse rows (skip header)
-                for row in rows[1:]:
-                    cols = row.find_all('td')
-                    if len(cols) < 3:
+                try:
+                    symbol_col = 1 if len(cols) > 3 else 0
+                    ltp_col = 2 if len(cols) > 3 else 1
+                    change_col = 3 if len(cols) > 3 else 2
+                    
+                    symbol_cell = cols[symbol_col]
+                    symbol_link = symbol_cell.find('a')
+                    if symbol_link:
+                        symbol = DataValidator.clean_symbol(symbol_link.get_text(strip=True))
+                    else:
+                        symbol = DataValidator.clean_symbol(symbol_cell.get_text(strip=True))
+                    
+                    ltp = DataValidator.safe_float(cols[ltp_col].get_text(strip=True))
+                    change = 0.0
+                    if len(cols) > change_col:
+                        change = DataValidator.safe_float(cols[change_col].get_text(strip=True))
+                    
+                    if not DataValidator.is_valid_symbol(symbol) or not DataValidator.is_valid_price(ltp):
                         continue
                     
-                    try:
-                        # Basic parsing - adjust indices based on MeroLagani structure
-                        symbol = DataValidator.clean_symbol(
-                            cols[1].get_text(strip=True) if len(cols) > 1 
-                            else cols[0].get_text(strip=True)
-                        )
-                        ltp = DataValidator.safe_float(
-                            cols[2].get_text(strip=True) if len(cols) > 2 else 0
-                        )
-                        change = DataValidator.safe_float(
-                            cols[3].get_text(strip=True) if len(cols) > 3 else 0
-                        )
-                        
-                        if not DataValidator.is_valid_symbol(symbol) or not DataValidator.is_valid_price(ltp):
-                            continue
-                        
-                        stock_data = self._build_stock_data(symbol, ltp, change, 1000, url)
-                        stocks_data.append(stock_data)
-                        
-                    except Exception as e:
-                        continue
+                    qty = 1000
+                    if len(cols) > 4:
+                        for col_idx in range(4, min(len(cols), 8)):
+                            col_text = cols[col_idx].get_text(strip=True)
+                            col_value = DataValidator.safe_int(col_text)
+                            if col_value > 100:
+                                qty = col_value
+                                break
+                    
+                    stock_data = self._build_stock_data(symbol, ltp, change, qty, url)
+                    stocks_data.append(stock_data)
+                    
+                except Exception as e:
+                    logger.debug(f"Error parsing MeroLagani stock row {i}: {e}")
+                    continue
+            
+            logger.info(f"MeroLagani stock parsing completed: {len(stocks_data)} stocks")
+            return stocks_data
         
         except Exception as e:
-            logger.error(f"Error in MeroLagani parsing: {e}")
-        
-        return stocks_data
+            logger.error(f"Error in MeroLagani stock parsing: {e}")
+            return []
     
-    def _parse_nepali_date(self, date_str):
-        """Parse Nepali date string and convert to standard date format"""
-        if not date_str or date_str.strip() == '-':
-            return None
-        
-        try:
-            # Clean the date string
-            date_str = date_str.strip()
-            
-            # Common Nepali date formats to handle
-            date_patterns = [
-                r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})',  # YYYY-MM-DD or YYYY/MM/DD
-                r'(\d{1,2})[/-](\d{1,2})[/-](\d{4})',  # MM-DD-YYYY or MM/DD/YYYY
-                r'(\d{1,2})[/-](\d{1,2})[/-](\d{2})',   # MM-DD-YY or MM/DD/YY
-            ]
-            
-            for pattern in date_patterns:
-                match = re.search(pattern, date_str)
-                if match:
-                    parts = match.groups()
-                    
-                    # Handle different formats
-                    if len(parts[0]) == 4:  # YYYY-MM-DD format
-                        year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
-                    elif len(parts[2]) == 4:  # MM-DD-YYYY format
-                        month, day, year = int(parts[0]), int(parts[1]), int(parts[2])
-                    else:  # MM-DD-YY format
-                        month, day = int(parts[0]), int(parts[1])
-                        year = int(parts[2])
-                        if year < 50:  # Assume 20xx for years < 50
-                            year += 2000
-                        else:  # Assume 19xx for years >= 50
-                            year += 1900
-                    
-                    # Validate ranges
-                    if 1 <= month <= 12 and 1 <= day <= 31 and 1980 <= year <= 2050:
-                        try:
-                            return datetime(year, month, day).date()
-                        except ValueError:
-                            continue
-            
-            # If no pattern matches, try to extract just year
-            year_match = re.search(r'\b(20\d{2})\b', date_str)
-            if year_match:
-                year = int(year_match.group(1))
-                return datetime(year, 1, 1).date()  # Default to Jan 1st
-                
-        except Exception as e:
-            logger.debug(f"Error parsing date '{date_str}': {e}")
-        
-        return None
-    
-    def _build_stock_data(self, symbol, ltp, change, qty, source_url):
+    def _build_stock_data(self, symbol, ltp, change, qty, source_url, high=None, low=None):
         """Build standardized stock data dictionary"""
         change_percent = (change / ltp * 100) if ltp > 0 else 0.0
         prev_close = ltp - change if change != 0 else ltp
         
+        if high is None:
+            high = ltp + abs(change) if change > 0 else ltp
+        if low is None:
+            low = ltp - abs(change) if change < 0 else ltp
+        
         return {
             'symbol': symbol,
-            'company_name': symbol,  # Use symbol as company name by default
-            'ltp': ltp,
-            'change': change,
-            'change_percent': change_percent,
-            'high': ltp + abs(change) if change > 0 else ltp,
-            'low': ltp - abs(change) if change < 0 else ltp,
-            'open_price': prev_close,
-            'prev_close': prev_close,
+            'company_name': symbol,
+            'ltp': round(ltp, 2),
+            'change': round(change, 2),
+            'change_percent': round(change_percent, 2),
+            'high': round(high, 2),
+            'low': round(low, 2),
+            'open_price': round(prev_close, 2),
+            'prev_close': round(prev_close, 2),
             'qty': qty,
-            'turnover': ltp * qty,
-            'trades': abs(hash(symbol)) % 100 + 20,  # Generate reasonable fake trades count
-            'source': source_url
+            'turnover': round(ltp * qty, 2),
+            'trades': abs(hash(symbol)) % 100 + 20,
+            'source': source_url,
+            'scraped_at': datetime.now()
         }
     
     def _find_column_index(self, headers, possible_names):
         """Find column index by matching possible column names"""
         for i, header in enumerate(headers):
+            header_lower = header.lower()
             for name in possible_names:
-                if name in header:
+                if name.lower() in header_lower:
                     return i
         return -1
-    
-    def _populate_sample_data(self):
-        """Populate sample stock data when scraping fails"""
-        logger.info("Populating sample stock data...")
-        
-        sample_stocks = [
-            {'symbol': 'NABIL', 'company_name': 'NABIL BANK LIMITED', 'ltp': 1420.0, 'change': 15.0},
-            {'symbol': 'ADBL', 'company_name': 'AGRICULTURE DEVELOPMENT BANK LIMITED', 'ltp': 350.0, 'change': -5.0},
-            {'symbol': 'EBL', 'company_name': 'EVEREST BANK LIMITED', 'ltp': 720.0, 'change': 12.0},
-            {'symbol': 'NBL', 'company_name': 'NEPAL BANK LIMITED', 'ltp': 410.0, 'change': -8.0},
-            {'symbol': 'SBI', 'company_name': 'NEPAL SBI BANK LIMITED', 'ltp': 460.0, 'change': 7.0},
-            {'symbol': 'KBL', 'company_name': 'KUMARI BANK LIMITED', 'ltp': 310.0, 'change': -3.0},
-            {'symbol': 'HBL', 'company_name': 'HIMALAYAN BANK LIMITED', 'ltp': 560.0, 'change': 10.0},
-            {'symbol': 'HIDCL', 'company_name': 'HYDROELECTRICITY INVESTMENT AND DEVELOPMENT COMPANY LIMITED', 'ltp': 305.0, 'change': 2.0},
-            {'symbol': 'NFS', 'company_name': 'NEPAL FINANCE LTD', 'ltp': 790.0, 'change': 18.0},
-            {'symbol': 'CORBL', 'company_name': 'CORPORATE DEVELOPMENT BANK LIMITED', 'ltp': 2250.0, 'change': -25.0},
-            {'symbol': 'BOKL', 'company_name': 'BANK OF KATHMANDU LIMITED', 'ltp': 385.0, 'change': 8.0},
-            {'symbol': 'NICA', 'company_name': 'NIC ASIA BANK LIMITED', 'ltp': 950.0, 'change': -12.0},
-            {'symbol': 'PRVU', 'company_name': 'PRABHU BANK LIMITED', 'ltp': 390.0, 'change': 5.0},
-            {'symbol': 'SANIMA', 'company_name': 'SANIMA BANK LIMITED', 'ltp': 365.0, 'change': -2.0},
-            {'symbol': 'MBL', 'company_name': 'MACHHAPUCHCHHRE BANK LIMITED', 'ltp': 425.0, 'change': 9.0},
-        ]
-        
-        enriched_stocks = []
-        for stock in sample_stocks:
-            base_price = stock['ltp']
-            change = stock['change']
-            high = base_price + abs(change) + 5
-            low = base_price - abs(change) - 5
-            qty = abs(hash(stock['symbol'])) % 5000 + 1000
-            
-            enriched_stocks.append({
-                'symbol': stock['symbol'],
-                'company_name': stock['company_name'],
-                'ltp': base_price,
-                'change': change,
-                'change_percent': (change / base_price) * 100,
-                'high': high,
-                'low': low,
-                'open_price': base_price - change,
-                'prev_close': base_price - change,
-                'qty': qty,
-                'turnover': base_price * qty,
-                'trades': abs(hash(stock['symbol'])) % 100 + 20,
-                'source': 'Sample Data'
-            })
-        
-        count = self.price_service.save_stock_prices(enriched_stocks, 'Sample Data')
-        self.last_scrape_time = datetime.now()
-        return count
     
     def get_last_scrape_time(self):
         """Get the timestamp of last successful stock scrape"""
@@ -945,36 +869,88 @@ class EnhancedScrapingService:
         return {
             'stocks': stock_count,
             'ipos': ipo_count,
-            'total': stock_count + ipo_count
+            'total': stock_count + ipo_count,
+            'last_stock_scrape': self.last_scrape_time,
+            'last_ipo_scrape': self.last_ipo_scrape_time
         }
 
 
 class IPOService:
-    """Service for handling IPO/FPO/Rights share data"""
+    """Service for handling IPO/FPO/Rights share data with separate tables"""
     
     def __init__(self, db_service):
         self.db_service = db_service
         self._create_tables()
     
     def _create_tables(self):
-        """Create IPO/FPO/Rights tables"""
+        """Create separate tables for IPOs, FPOs, and Rights/Dividends"""
         try:
             conn = self.db_service.get_connection()
             cursor = conn.cursor()
             
+            # IPO Table
             if self.db_service.db_type == 'mysql':
-                # MySQL table creation
                 cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS issues (
+                    CREATE TABLE IF NOT EXISTS ipos (
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         company_name VARCHAR(255) NOT NULL,
                         symbol VARCHAR(20),
-                        issue_type ENUM('IPO', 'FPO', 'Rights', 'Debenture') NOT NULL,
+                        share_type VARCHAR(50) DEFAULT 'Ordinary',
                         units BIGINT DEFAULT 0,
                         price DECIMAL(10, 2) DEFAULT 0.00,
                         total_amount DECIMAL(15, 2) DEFAULT 0.00,
                         open_date DATE,
                         close_date DATE,
+                        status ENUM('coming_soon', 'open', 'closed') DEFAULT 'coming_soon',
+                        issue_manager VARCHAR(255),
+                        source VARCHAR(500),
+                        scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        INDEX idx_symbol (symbol),
+                        INDEX idx_share_type (share_type),
+                        INDEX idx_status (status),
+                        INDEX idx_open_date (open_date),
+                        UNIQUE KEY unique_ipo (company_name, open_date)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                ''')
+                
+                # FPO Table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS fpos (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        company_name VARCHAR(255) NOT NULL,
+                        symbol VARCHAR(20),
+                        share_type VARCHAR(50) DEFAULT 'Ordinary',
+                        units BIGINT DEFAULT 0,
+                        price DECIMAL(10, 2) DEFAULT 0.00,
+                        total_amount DECIMAL(15, 2) DEFAULT 0.00,
+                        open_date DATE,
+                        close_date DATE,
+                        status ENUM('coming_soon', 'open', 'closed') DEFAULT 'coming_soon',
+                        issue_manager VARCHAR(255),
+                        source VARCHAR(500),
+                        scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        INDEX idx_symbol (symbol),
+                        INDEX idx_share_type (share_type),
+                        INDEX idx_status (status),
+                        INDEX idx_open_date (open_date),
+                        UNIQUE KEY unique_fpo (company_name, open_date)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                ''')
+                
+                # Rights/Dividends Table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS rights_dividends (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        company_name VARCHAR(255) NOT NULL,
+                        symbol VARCHAR(20),
+                        issue_type ENUM('Rights', 'Dividend') DEFAULT 'Rights',
+                        rights_ratio VARCHAR(20),
+                        bonus_share VARCHAR(20),
+                        cash_dividend VARCHAR(20),
+                        book_close_date DATE,
+                        fiscal_year VARCHAR(20),
                         status ENUM('coming_soon', 'open', 'closed') DEFAULT 'coming_soon',
                         source VARCHAR(500),
                         scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -982,43 +958,92 @@ class IPOService:
                         INDEX idx_symbol (symbol),
                         INDEX idx_issue_type (issue_type),
                         INDEX idx_status (status),
-                        INDEX idx_open_date (open_date),
-                        INDEX idx_close_date (close_date),
-                        UNIQUE KEY unique_company_type (company_name, issue_type)
+                        INDEX idx_book_close_date (book_close_date),
+                        UNIQUE KEY unique_rights (company_name, fiscal_year, issue_type)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 ''')
             else:
-                # SQLite table creation
+                # SQLite tables
                 cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS issues (
+                    CREATE TABLE IF NOT EXISTS ipos (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         company_name TEXT NOT NULL,
                         symbol TEXT,
-                        issue_type TEXT NOT NULL CHECK (issue_type IN ('IPO', 'FPO', 'Rights', 'Debenture')),
+                        share_type TEXT DEFAULT 'Ordinary',
                         units INTEGER DEFAULT 0,
                         price REAL DEFAULT 0.0,
                         total_amount REAL DEFAULT 0.0,
                         open_date DATE,
                         close_date DATE,
                         status TEXT DEFAULT 'coming_soon' CHECK (status IN ('coming_soon', 'open', 'closed')),
+                        issue_manager TEXT,
                         source TEXT,
                         scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE(company_name, issue_type)
+                        UNIQUE(company_name, open_date)
                     )
                 ''')
                 
-                # Create indices for SQLite
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_issues_symbol ON issues (symbol)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_issues_type ON issues (issue_type)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_issues_status ON issues (status)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_issues_open_date ON issues (open_date)')
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS fpos (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        company_name TEXT NOT NULL,
+                        symbol TEXT,
+                        share_type TEXT DEFAULT 'Ordinary',
+                        units INTEGER DEFAULT 0,
+                        price REAL DEFAULT 0.0,
+                        total_amount REAL DEFAULT 0.0,
+                        open_date DATE,
+                        close_date DATE,
+                        status TEXT DEFAULT 'coming_soon' CHECK (status IN ('coming_soon', 'open', 'closed')),
+                        issue_manager TEXT,
+                        source TEXT,
+                        scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(company_name, open_date)
+                    )
+                ''')
+                
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS rights_dividends (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        company_name TEXT NOT NULL,
+                        symbol TEXT,
+                        issue_type TEXT DEFAULT 'Rights' CHECK (issue_type IN ('Rights', 'Dividend')),
+                        rights_ratio TEXT,
+                        bonus_share TEXT,
+                        cash_dividend TEXT,
+                        book_close_date DATE,
+                        fiscal_year TEXT,
+                        status TEXT DEFAULT 'coming_soon' CHECK (status IN ('coming_soon', 'open', 'closed')),
+                        source TEXT,
+                        scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(company_name, fiscal_year, issue_type)
+                    )
+                ''')
+                
+                # Create indexes for SQLite
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_ipos_symbol ON ipos (symbol)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_ipos_share_type ON ipos (share_type)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_ipos_status ON ipos (status)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_ipos_open_date ON ipos (open_date)')
+                
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_fpos_symbol ON fpos (symbol)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_fpos_share_type ON fpos (share_type)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_fpos_status ON fpos (status)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_fpos_open_date ON fpos (open_date)')
+                
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_rights_symbol ON rights_dividends (symbol)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_rights_issue_type ON rights_dividends (issue_type)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_rights_status ON rights_dividends (status)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_rights_book_date ON rights_dividends (book_close_date)')
             
             conn.commit()
-            logger.info(f"IPO tables created successfully for {self.db_service.db_type}")
+            logger.info(f"Separate IPO/FPO/Rights tables created successfully for {self.db_service.db_type}")
             
         except Exception as e:
-            logger.error(f"Error creating IPO tables: {e}")
+            logger.error(f"Error creating separate tables: {e}")
             raise
         finally:
             try:
@@ -1026,8 +1051,8 @@ class IPOService:
             except:
                 pass
     
-    def save_issues(self, issues_data, source_name):
-        """Save IPO/FPO/Rights data to database"""
+    def save_issues_to_table(self, issues_data, table_name, issue_type, source_name):
+        """Save data to specific table and maintain only 8 latest records"""
         if not issues_data:
             return 0
         
@@ -1035,72 +1060,114 @@ class IPOService:
             conn = self.db_service.get_connection()
             cursor = conn.cursor()
             
+            # Clear existing data to maintain only latest 8 records
+            cursor.execute(f"DELETE FROM {table_name}")
+            
             saved_count = 0
             
-            for issue in issues_data:
+            # Insert new data (limited to 8 records)
+            for issue in issues_data[:8]:  # Ensure only 8 records max
                 try:
-                    if self.db_service.db_type == 'mysql':
-                        cursor.execute('''
-                            INSERT INTO issues (
-                                company_name, symbol, issue_type, units, price, 
-                                total_amount, open_date, close_date, status, source, scraped_at
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            ON DUPLICATE KEY UPDATE
-                                units = VALUES(units),
-                                price = VALUES(price),
-                                total_amount = VALUES(total_amount),
-                                open_date = VALUES(open_date),
-                                close_date = VALUES(close_date),
-                                status = VALUES(status),
-                                source = VALUES(source),
-                                updated_at = CURRENT_TIMESTAMP
-                        ''', (
-                            issue['company_name'],
-                            issue.get('symbol'),
-                            issue['issue_type'],
-                            issue.get('units', 0),
-                            issue.get('price', 0.0),
-                            issue.get('total_amount', 0.0),
-                            issue.get('open_date'),
-                            issue.get('close_date'),
-                            issue.get('status', 'coming_soon'),
-                            issue.get('source'),
-                            datetime.now()
-                        ))
-                    else:
-                        # SQLite - use INSERT OR REPLACE
-                        cursor.execute('''
-                            INSERT OR REPLACE INTO issues (
-                                company_name, symbol, issue_type, units, price, 
-                                total_amount, open_date, close_date, status, source, scraped_at, updated_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (
-                            issue['company_name'],
-                            issue.get('symbol'),
-                            issue['issue_type'],
-                            issue.get('units', 0),
-                            issue.get('price', 0.0),
-                            issue.get('total_amount', 0.0),
-                            issue.get('open_date'),
-                            issue.get('close_date'),
-                            issue.get('status', 'coming_soon'),
-                            issue.get('source'),
-                            datetime.now(),
-                            datetime.now()
-                        ))
+                    if table_name == 'ipos' or table_name == 'fpos':
+                        if self.db_service.db_type == 'mysql':
+                            cursor.execute(f'''
+                                INSERT INTO {table_name} (
+                                    company_name, symbol, share_type, units, price, 
+                                    total_amount, open_date, close_date, status, 
+                                    issue_manager, source, scraped_at
+                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ''', (
+                                issue['company_name'],
+                                issue.get('symbol'),
+                                issue.get('share_type', 'Ordinary'),
+                                issue.get('units', 0),
+                                issue.get('price', 0.0),
+                                issue.get('total_amount', 0.0),
+                                issue.get('open_date'),
+                                issue.get('close_date'),
+                                issue.get('status', 'coming_soon'),
+                                issue.get('issue_manager'),
+                                issue.get('source'),
+                                datetime.now()
+                            ))
+                        else:
+                            cursor.execute(f'''
+                                INSERT INTO {table_name} (
+                                    company_name, symbol, share_type, units, price, 
+                                    total_amount, open_date, close_date, status, 
+                                    issue_manager, source, scraped_at, updated_at
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', (
+                                issue['company_name'],
+                                issue.get('symbol'),
+                                issue.get('share_type', 'Ordinary'),
+                                issue.get('units', 0),
+                                issue.get('price', 0.0),
+                                issue.get('total_amount', 0.0),
+                                issue.get('open_date'),
+                                issue.get('close_date'),
+                                issue.get('status', 'coming_soon'),
+                                issue.get('issue_manager'),
+                                issue.get('source'),
+                                datetime.now(),
+                                datetime.now()
+                            ))
+                    
+                    elif table_name == 'rights_dividends':
+                        if self.db_service.db_type == 'mysql':
+                            cursor.execute(f'''
+                                INSERT INTO {table_name} (
+                                    company_name, symbol, issue_type, rights_ratio, 
+                                    bonus_share, cash_dividend, book_close_date, 
+                                    fiscal_year, status, source, scraped_at
+                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ''', (
+                                issue['company_name'],
+                                issue.get('symbol'),
+                                issue.get('issue_type', 'Rights'),
+                                issue.get('rights_ratio'),
+                                issue.get('bonus_share'),
+                                issue.get('cash_dividend'),
+                                issue.get('book_close_date'),
+                                issue.get('fiscal_year'),
+                                issue.get('status', 'coming_soon'),
+                                issue.get('source'),
+                                datetime.now()
+                            ))
+                        else:
+                            cursor.execute(f'''
+                                INSERT INTO {table_name} (
+                                    company_name, symbol, issue_type, rights_ratio, 
+                                    bonus_share, cash_dividend, book_close_date, 
+                                    fiscal_year, status, source, scraped_at, updated_at
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', (
+                                issue['company_name'],
+                                issue.get('symbol'),
+                                issue.get('issue_type', 'Rights'),
+                                issue.get('rights_ratio'),
+                                issue.get('bonus_share'),
+                                issue.get('cash_dividend'),
+                                issue.get('book_close_date'),
+                                issue.get('fiscal_year'),
+                                issue.get('status', 'coming_soon'),
+                                issue.get('source'),
+                                datetime.now(),
+                                datetime.now()
+                            ))
                     
                     saved_count += 1
                     
                 except Exception as e:
-                    logger.warning(f"Error saving issue {issue.get('company_name', 'Unknown')}: {e}")
+                    logger.warning(f"Error saving {issue_type} issue {issue.get('company_name', 'Unknown')}: {e}")
                     continue
             
             conn.commit()
-            logger.info(f"Saved {saved_count} issues from {source_name}")
+            logger.info(f"Saved {saved_count} {issue_type} issues to {table_name} table from {source_name}")
             return saved_count
             
         except Exception as e:
-            logger.error(f"Error saving issues: {e}")
+            logger.error(f"Error saving {issue_type} issues to {table_name}: {e}")
             return 0
         finally:
             try:
@@ -1108,37 +1175,29 @@ class IPOService:
             except:
                 pass
     
-    def get_open_issues(self, issue_type=None):
-        """Get currently open issues"""
+    def get_all_ipos(self):
+        """Get all IPO records"""
+        return self._get_table_data('ipos')
+    
+    def get_all_fpos(self):
+        """Get all FPO records"""
+        return self._get_table_data('fpos')
+    
+    def get_all_rights_dividends(self):
+        """Get all Rights/Dividend records"""
+        return self._get_table_data('rights_dividends')
+    
+    def _get_table_data(self, table_name):
+        """Get all data from specified table"""
         try:
             conn = self.db_service.get_connection()
             cursor = conn.cursor()
             
-            query = "SELECT * FROM issues WHERE status = 'open'"
-            params = []
-            
-            if issue_type:
-                if self.db_service.db_type == 'mysql':
-                    query += " AND issue_type = %s"
-                else:
-                    query += " AND issue_type = ?"
-                params.append(issue_type)
-            
-            query += " ORDER BY open_date DESC"
-            
-            cursor.execute(query, params)
-            
-            if self.db_service.db_type == 'mysql':
-                columns = [desc[0] for desc in cursor.description]
-                results = [dict(zip(columns, row)) for row in cursor.fetchall()]
-            else:
-                cursor.row_factory = sqlite3.Row
-                results = [dict(row) for row in cursor.fetchall()]
-            
-            return results
+            cursor.execute(f"SELECT * FROM {table_name} ORDER BY scraped_at DESC")
+            return self._fetch_results(cursor)
             
         except Exception as e:
-            logger.error(f"Error getting open issues: {e}")
+            logger.error(f"Error getting data from {table_name}: {e}")
             return []
         finally:
             try:
@@ -1146,74 +1205,45 @@ class IPOService:
             except:
                 pass
     
-    def get_coming_soon_issues(self):
-        """Get issues that are coming soon"""
-        try:
-            conn = self.db_service.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT * FROM issues WHERE status = 'coming_soon' ORDER BY open_date ASC")
-            
-            if self.db_service.db_type == 'mysql':
-                columns = [desc[0] for desc in cursor.description]
-                results = [dict(zip(columns, row)) for row in cursor.fetchall()]
-            else:
-                cursor.row_factory = sqlite3.Row
-                results = [dict(row) for row in cursor.fetchall()]
-            
-            return results
-            
-        except Exception as e:
-            logger.error(f"Error getting coming soon issues: {e}")
-            return []
-        finally:
-            try:
-                conn.close()
-            except:
-                pass
+    def _fetch_results(self, cursor):
+        """Helper method to fetch results from cursor"""
+        if self.db_service.db_type == 'mysql':
+            columns = [desc[0] for desc in cursor.description]
+            results = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        else:
+            cursor.row_factory = sqlite3.Row
+            results = [dict(row) for row in cursor.fetchall()]
+        
+        return results
     
-    def search_issues(self, query, limit=20):
-        """Search issues by company name or symbol"""
+    def get_statistics(self):
+        """Get statistics about all tables"""
         try:
             conn = self.db_service.get_connection()
             cursor = conn.cursor()
             
-            search_pattern = f"%{query}%"
+            stats = {}
             
-            if self.db_service.db_type == 'mysql':
-                cursor.execute('''
-                    SELECT * FROM issues 
-                    WHERE company_name LIKE %s OR symbol LIKE %s
-                    ORDER BY 
-                        CASE WHEN status = 'open' THEN 1
-                             WHEN status = 'coming_soon' THEN 2
-                             ELSE 3 END,
-                        open_date DESC
-                    LIMIT %s
-                ''', (search_pattern, search_pattern, limit))
-                
-                columns = [desc[0] for desc in cursor.description]
-                results = [dict(zip(columns, row)) for row in cursor.fetchall()]
-            else:
-                cursor.execute('''
-                    SELECT * FROM issues 
-                    WHERE company_name LIKE ? OR symbol LIKE ?
-                    ORDER BY 
-                        CASE WHEN status = 'open' THEN 1
-                             WHEN status = 'coming_soon' THEN 2
-                             ELSE 3 END,
-                        open_date DESC
-                    LIMIT ?
-                ''', (search_pattern, search_pattern, limit))
-                
-                cursor.row_factory = sqlite3.Row
-                results = [dict(row) for row in cursor.fetchall()]
+            # Count records in each table
+            for table in ['ipos', 'fpos', 'rights_dividends']:
+                cursor.execute(f"SELECT COUNT(*) as count FROM {table}")
+                result = cursor.fetchone()
+                stats[f'{table}_count'] = result[0] if result else 0
             
-            return results
+            # Count by status in each table
+            for table in ['ipos', 'fpos', 'rights_dividends']:
+                cursor.execute(f'''
+                    SELECT status, COUNT(*) as count 
+                    FROM {table} 
+                    GROUP BY status
+                ''')
+                stats[f'{table}_by_status'] = {row[0]: row[1] for row in cursor.fetchall()}
+            
+            return stats
             
         except Exception as e:
-            logger.error(f"Error searching issues: {e}")
-            return []
+            logger.error(f"Error getting statistics: {e}")
+            return {}
         finally:
             try:
                 conn.close()
@@ -1229,23 +1259,29 @@ class DataValidator:
         """Clean and validate symbol text"""
         if not symbol_text:
             return ""
-        return re.sub(r'[^\w]', '', symbol_text).upper()
+        cleaned = re.sub(r'[^\w]', '', str(symbol_text)).upper()
+        return cleaned
     
     @staticmethod
     def is_valid_symbol(symbol):
         """Check if symbol is valid"""
-        if not symbol or len(symbol) < 2 or len(symbol) > 10:
+        if not symbol or len(symbol) < 2 or len(symbol) > 15:
             return False
         if symbol.isdigit():
             return False
-        # Exclude obvious non-symbols
-        invalid_symbols = {'NO', 'SN', 'SR', 'NAME', 'PRICE', 'CHANGE', 'HIGH', 'LOW', 'QTY', 'VOLUME'}
+        invalid_symbols = {
+            'NO', 'SN', 'SR', 'NAME', 'COMPANY', 'SYMBOL', 'PRICE', 'CHANGE', 
+            'HIGH', 'LOW', 'QTY', 'VOLUME', 'LTP', 'PERCENT', 'TURNOVER', 'TRADES',
+            'OPEN', 'CLOSE', 'PREV', 'LAST', 'TOTAL', 'VALUE'
+        }
         return symbol not in invalid_symbols
     
     @staticmethod
     def is_valid_price(price):
         """Check if price is reasonable for Nepal stock market"""
-        return 10 <= price <= 5000 if price > 0 else False
+        if not isinstance(price, (int, float)):
+            return False
+        return 5 <= price <= 10000
     
     @staticmethod
     def safe_float(value):
@@ -1253,13 +1289,21 @@ class DataValidator:
         try:
             if value is None:
                 return 0.0
-            # Remove commas, percentage signs, currency symbols
-            cleaned_value = str(value).replace(',', '').replace('%', '').replace('Rs.', '').replace('NPR', '').strip()
-            # Handle negative values in parentheses
-            if cleaned_value.startswith('(') and cleaned_value.endswith(')'):
-                cleaned_value = '-' + cleaned_value[1:-1]
-            return float(cleaned_value) if cleaned_value and cleaned_value != '-' else 0.0
-        except:
+            
+            if isinstance(value, str):
+                cleaned_value = value.replace(',', '').replace('%', '').replace('Rs.', '').replace('NPR', '').strip()
+                
+                if cleaned_value.startswith('(') and cleaned_value.endswith(')'):
+                    cleaned_value = '-' + cleaned_value[1:-1]
+                
+                if not cleaned_value or cleaned_value in ['-', 'N/A', 'n/a', '']:
+                    return 0.0
+                
+                return float(cleaned_value)
+            
+            return float(value)
+            
+        except (ValueError, TypeError):
             return 0.0
     
     @staticmethod
@@ -1268,9 +1312,16 @@ class DataValidator:
         try:
             if value is None:
                 return 0
-            cleaned_value = str(value).replace(',', '').strip()
-            return int(float(cleaned_value)) if cleaned_value and cleaned_value != '-' else 0
-        except:
+            
+            if isinstance(value, str):
+                cleaned_value = value.replace(',', '').replace(' ', '').strip()
+                if not cleaned_value or cleaned_value in ['-', 'N/A', 'n/a']:
+                    return 0
+                return int(float(cleaned_value))
+            
+            return int(value)
+            
+        except (ValueError, TypeError):
             return 0
     
     @staticmethod
@@ -1279,20 +1330,89 @@ class DataValidator:
         if not company_name:
             return ""
         
-        # Remove common words and take first letters
-        words = re.findall(r'\b[A-Z][A-Z\s]*[A-Z]\b|\b[A-Z]+\b', company_name.upper())
+        company_name = company_name.strip().upper()
         
-        if words:
-            # Take first letters of significant words
-            symbol_parts = []
-            for word in words[:3]:  # Max 3 words
-                if word in ['LIMITED', 'LTD', 'COMPANY', 'CO', 'BANK', 'FINANCE']:
-                    symbol_parts.append(word[0])
-                else:
-                    symbol_parts.append(word[:2] if len(word) > 1 else word)
-            
-            symbol = ''.join(symbol_parts)[:6]  # Max 6 characters
-            return symbol if len(symbol) >= 2 else company_name[:4].upper()
+        stop_words = ['LIMITED', 'LTD', 'COMPANY', 'CO', 'PRIVATE', 'PVT', 'PUBLIC', 'PUB']
+        words = []
         
-        # Fallback: take first 4 characters
-        return re.sub(r'[^A-Z]', '', company_name.upper())[:4]
+        for word in company_name.split():
+            if word not in stop_words and len(word) > 1:
+                words.append(word)
+        
+        if not words:
+            words = company_name.split()[:2]
+        
+        symbol = ""
+        for word in words[:3]:
+            if len(word) <= 3:
+                symbol += word
+            else:
+                symbol += word[0]
+        
+        symbol = symbol[:8]
+        
+        return symbol if len(symbol) >= 2 else company_name[:4]
+
+
+# Test function for separate tables
+def test_separate_tables_scraping():
+    """Test the separate tables scraping service"""
+    
+    class MockPriceService:
+        def save_stock_prices(self, stocks, source):
+            print(f"Mock PriceService: Received {len(stocks)} stocks from {source}")
+            return len(stocks)
+    
+    class MockDBService:
+        def __init__(self):
+            self.db_type = 'sqlite'
+        
+        def get_connection(self):
+            return sqlite3.connect(':memory:')
+    
+    print("=== Testing Separate Tables Scraping Service ===\n")
+    
+    db_service = MockDBService()
+    price_service = MockPriceService()
+    ipo_service = IPOService(db_service)
+    
+    scraper = EnhancedScrapingService(price_service, ipo_service)
+    
+    print("1. Testing separate table creation...")
+    print(f"   Tables created successfully\n")
+    
+    print("2. Testing IPO/FPO/Rights scraping (8 items each)...")
+    ipo_result = scraper.scrape_ipo_sources()
+    print(f"   Total scraping result: {ipo_result} issues\n")
+    
+    print("3. Testing individual table queries...")
+    try:
+        ipos = ipo_service.get_all_ipos()
+        fpos = ipo_service.get_all_fpos()
+        rights = ipo_service.get_all_rights_dividends()
+        
+        print(f"   IPOs table: {len(ipos)} records")
+        print(f"   FPOs table: {len(fpos)} records")
+        print(f"   Rights/Dividends table: {len(rights)} records")
+        
+        stats = ipo_service.get_statistics()
+        print(f"   Statistics: {stats}")
+    except Exception as e:
+        print(f"   Error testing queries: {e}")
+    
+    print("\n=== Test completed ===")
+
+
+# Main execution
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler('separate_tables_scraping.log')
+        ]
+    )
+    
+    # Run the test
+    test_separate_tables_scraping()
