@@ -1,11 +1,16 @@
-# app.py - Flutter-ready version with separate IPO/FPO/Rights tables
+# app.py - Flutter-ready version with intelligent scheduled scraping
 
 import os
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+import pytz
+import hashlib
+import json
 
 # Import your existing service modules
 from auth_service import AuthService, create_auth_decorators
@@ -99,8 +104,334 @@ class DatabaseService:
             conn.execute('PRAGMA foreign_keys = ON')
             return conn
 
+class SmartScheduler:
+    """Intelligent scheduler for market-aware scraping"""
+    
+    def __init__(self, scraping_service, price_service, db_service):
+        self.scraping_service = scraping_service
+        self.price_service = price_service
+        self.db_service = db_service
+        self.scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Kathmandu'))
+        
+        # Market configuration for Nepal (Sunday-Thursday, 11 AM - 3 PM)
+        self.market_days = [6, 0, 1, 2, 3]  # Sunday=6, Monday=0, ..., Thursday=3
+        self.market_start_time = time(11, 0)  # 11:00 AM
+        self.market_end_time = time(15, 0)    # 3:00 PM
+        self.nepal_tz = pytz.timezone('Asia/Kathmandu')
+        
+        # Smart detection settings
+        self.daily_scrape_count = 0
+        self.daily_no_change_count = 0
+        self.last_data_hash = None
+        self.market_closed_today = False
+        
+        # Initialize scheduler table
+        self._init_scheduler_table()
+    
+    def _init_scheduler_table(self):
+        """Initialize table to track scraping history and market status"""
+        try:
+            conn = self.db_service.get_connection()
+            cursor = conn.cursor()
+            
+            if self.db_service.db_type == 'mysql':
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS scheduler_history (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        date DATE NOT NULL,
+                        scrape_time DATETIME NOT NULL,
+                        data_hash VARCHAR(64),
+                        data_changed BOOLEAN DEFAULT TRUE,
+                        scrape_count INT DEFAULT 1,
+                        market_detected_closed BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE KEY unique_date_time (date, scrape_time)
+                    )
+                """)
+            else:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS scheduler_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        date TEXT NOT NULL,
+                        scrape_time TEXT NOT NULL,
+                        data_hash TEXT,
+                        data_changed INTEGER DEFAULT 1,
+                        scrape_count INTEGER DEFAULT 1,
+                        market_detected_closed INTEGER DEFAULT 0,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(date, scrape_time)
+                    )
+                """)
+            
+            conn.commit()
+            conn.close()
+            logger.info("Scheduler history table initialized")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize scheduler table: {e}")
+    
+    def _get_current_nepal_time(self):
+        """Get current time in Nepal timezone"""
+        return datetime.now(self.nepal_tz)
+    
+    def _is_market_day(self, dt=None):
+        """Check if given datetime (or now) is a market day"""
+        if dt is None:
+            dt = self._get_current_nepal_time()
+        return dt.weekday() in self.market_days
+    
+    def _is_market_hours(self, dt=None):
+        """Check if given datetime (or now) is within market hours"""
+        if dt is None:
+            dt = self._get_current_nepal_time()
+        current_time = dt.time()
+        return self.market_start_time <= current_time <= self.market_end_time
+    
+    def _is_market_open(self, dt=None):
+        """Check if market should be open (market day + market hours)"""
+        return self._is_market_day(dt) and self._is_market_hours(dt)
+    
+    def _calculate_data_hash(self, stocks_data):
+        """Calculate hash of current stock data to detect changes"""
+        try:
+            # Create a simple representation of key stock data
+            data_for_hash = []
+            for stock in stocks_data[:50]:  # Use first 50 stocks for performance
+                data_for_hash.append({
+                    'symbol': stock.get('symbol', ''),
+                    'ltp': stock.get('ltp', 0),
+                    'change': stock.get('change', 0),
+                    'volume': stock.get('total_traded_quantity', 0)
+                })
+            
+            # Create hash
+            data_str = json.dumps(data_for_hash, sort_keys=True)
+            return hashlib.md5(data_str.encode()).hexdigest()
+            
+        except Exception as e:
+            logger.warning(f"Failed to calculate data hash: {e}")
+            return None
+    
+    def _get_today_scrape_info(self):
+        """Get today's scrape information"""
+        try:
+            today = self._get_current_nepal_time().date()
+            conn = self.db_service.get_connection()
+            cursor = conn.cursor()
+            
+            if self.db_service.db_type == 'mysql':
+                cursor.execute("""
+                    SELECT COUNT(*) as scrape_count, 
+                           SUM(CASE WHEN data_changed = FALSE THEN 1 ELSE 0 END) as no_change_count,
+                           MAX(CASE WHEN market_detected_closed = TRUE THEN 1 ELSE 0 END) as market_closed
+                    FROM scheduler_history 
+                    WHERE date = %s
+                """, (today,))
+            else:
+                cursor.execute("""
+                    SELECT COUNT(*) as scrape_count, 
+                           SUM(CASE WHEN data_changed = 0 THEN 1 ELSE 0 END) as no_change_count,
+                           MAX(CASE WHEN market_detected_closed = 1 THEN 1 ELSE 0 END) as market_closed
+                    FROM scheduler_history 
+                    WHERE date = ?
+                """, (today.isoformat(),))
+            
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                return {
+                    'scrape_count': result[0] or 0,
+                    'no_change_count': result[1] or 0,
+                    'market_closed': bool(result[2]) if result[2] is not None else False
+                }
+            else:
+                return {'scrape_count': 0, 'no_change_count': 0, 'market_closed': False}
+                
+        except Exception as e:
+            logger.error(f"Failed to get today's scrape info: {e}")
+            return {'scrape_count': 0, 'no_change_count': 0, 'market_closed': False}
+    
+    def _record_scrape_result(self, data_changed, data_hash=None):
+        """Record the result of a scrape"""
+        try:
+            now = self._get_current_nepal_time()
+            today = now.date()
+            scrape_info = self._get_today_scrape_info()
+            
+            # Determine if market appears closed
+            market_detected_closed = False
+            if scrape_info['scrape_count'] >= 2 and scrape_info['no_change_count'] >= 2:
+                market_detected_closed = True
+            
+            conn = self.db_service.get_connection()
+            cursor = conn.cursor()
+            
+            if self.db_service.db_type == 'mysql':
+                cursor.execute("""
+                    INSERT INTO scheduler_history 
+                    (date, scrape_time, data_hash, data_changed, scrape_count, market_detected_closed)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                    data_hash = VALUES(data_hash),
+                    data_changed = VALUES(data_changed),
+                    scrape_count = VALUES(scrape_count),
+                    market_detected_closed = VALUES(market_detected_closed)
+                """, (
+                    today, now, data_hash, data_changed, 
+                    scrape_info['scrape_count'] + 1, market_detected_closed
+                ))
+            else:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO scheduler_history 
+                    (date, scrape_time, data_hash, data_changed, scrape_count, market_detected_closed)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    today.isoformat(), now.isoformat(), data_hash, int(data_changed), 
+                    scrape_info['scrape_count'] + 1, int(market_detected_closed)
+                ))
+            
+            conn.commit()
+            conn.close()
+            
+            # Update instance variables
+            self.market_closed_today = market_detected_closed
+            
+        except Exception as e:
+            logger.error(f"Failed to record scrape result: {e}")
+    
+    def should_scrape_now(self):
+        """Determine if scraping should happen now based on intelligent rules"""
+        now = self._get_current_nepal_time()
+        
+        # Check if it's a market day and within market hours
+        if not self._is_market_open(now):
+            logger.info(f"Skipping scrape - outside market hours or not a market day")
+            return False
+        
+        # Get today's scrape information
+        scrape_info = self._get_today_scrape_info()
+        
+        # If market was already detected as closed today, skip
+        if scrape_info['market_closed']:
+            logger.info(f"Skipping scrape - market detected as closed today")
+            return False
+        
+        # If this is early in the day and we haven't done the initial detection, allow scraping
+        if scrape_info['scrape_count'] < 2:
+            logger.info(f"Allowing scrape for market detection (scrape #{scrape_info['scrape_count'] + 1})")
+            return True
+        
+        # If we've detected the market is active today (some data changed), continue scraping
+        if scrape_info['no_change_count'] < 2:
+            logger.info(f"Allowing scrape - market appears active")
+            return True
+        
+        logger.info(f"Skipping scrape - market appears closed today")
+        return False
+    
+    def scheduled_scrape(self):
+        """Execute scheduled scraping with intelligent logic"""
+        try:
+            logger.info("=== Scheduled Scrape Started ===")
+            
+            # Check if we should scrape
+            if not self.should_scrape_now():
+                return
+            
+            # Get current data for comparison
+            current_stocks = self.price_service.get_all_stocks()
+            current_hash = self._calculate_data_hash(current_stocks)
+            
+            # Perform the scrape
+            logger.info("Performing scheduled stock data scrape...")
+            stock_count = self.scraping_service.scrape_all_sources(force=True)
+            
+            # Get updated data
+            updated_stocks = self.price_service.get_all_stocks()
+            new_hash = self._calculate_data_hash(updated_stocks)
+            
+            # Determine if data changed
+            data_changed = current_hash != new_hash
+            
+            # Record the result
+            self._record_scrape_result(data_changed, new_hash)
+            
+            # Log the result
+            scrape_info = self._get_today_scrape_info()
+            logger.info(f"Scheduled scrape completed: {stock_count} stocks processed")
+            logger.info(f"Data changed: {data_changed}")
+            logger.info(f"Today's stats: {scrape_info['scrape_count']} scrapes, {scrape_info['no_change_count']} no-change")
+            
+            if self.market_closed_today:
+                logger.info("Market detected as closed - future scrapes will be skipped today")
+            
+        except Exception as e:
+            logger.error(f"Scheduled scrape failed: {e}")
+    
+    def start(self):
+        """Start the intelligent scheduler"""
+        try:
+            # Schedule scraping every 15 minutes during market hours on market days
+            self.scheduler.add_job(
+                func=self.scheduled_scrape,
+                trigger=CronTrigger(
+                    day_of_week='sun,mon,tue,wed,thu',  # Market days
+                    hour='11-14',  # 11 AM to 2 PM (last trigger at 2:45 PM)
+                    minute='*/15',  # Every 15 minutes
+                    timezone=self.nepal_tz
+                ),
+                id='market_scraper',
+                name='Intelligent Market Data Scraper',
+                max_instances=1,
+                replace_existing=True
+            )
+            
+            self.scheduler.start()
+            logger.info("Intelligent scheduler started successfully")
+            logger.info("Schedule: Every 15 minutes during market hours (11 AM - 3 PM, Sun-Thu)")
+            logger.info("Features: Market closure detection, automatic pause on closed days")
+            
+            # Log next scheduled run
+            next_run = self.scheduler.get_job('market_scraper').next_run_time
+            if next_run:
+                logger.info(f"Next scheduled scrape: {next_run.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            
+        except Exception as e:
+            logger.error(f"Failed to start scheduler: {e}")
+            raise
+    
+    def stop(self):
+        """Stop the scheduler"""
+        if self.scheduler.running:
+            self.scheduler.shutdown()
+            logger.info("Intelligent scheduler stopped")
+    
+    def get_scheduler_status(self):
+        """Get current scheduler status for API"""
+        try:
+            status = {
+                'scheduler_running': self.scheduler.running if hasattr(self, 'scheduler') else False,
+                'next_run': None,
+                'current_nepal_time': self._get_current_nepal_time().isoformat(),
+                'market_currently_open': self._is_market_open(),
+                'today_scrape_info': self._get_today_scrape_info(),
+                'market_detected_closed_today': self.market_closed_today
+            }
+            
+            if self.scheduler.running:
+                job = self.scheduler.get_job('market_scraper')
+                if job and job.next_run_time:
+                    status['next_run'] = job.next_run_time.isoformat()
+            
+            return status
+            
+        except Exception as e:
+            logger.error(f"Error getting scheduler status: {e}")
+            return {'error': str(e)}
+
 class NepalStockApp:
-    """Flutter-ready application class with separate IPO/FPO/Rights tables"""
+    """Flutter-ready application class with intelligent scheduled scraping"""
     
     def __init__(self):
         # Initialize database service
@@ -122,6 +453,13 @@ class NepalStockApp:
         self.price_service = PriceService(self.db_service)
         self.ipo_service = IPOService(self.db_service)  # Updated IPO service
         self.scraping_service = EnhancedScrapingService(self.price_service, self.ipo_service)
+        
+        # Initialize intelligent scheduler
+        self.smart_scheduler = SmartScheduler(
+            self.scraping_service, 
+            self.price_service, 
+            self.db_service
+        )
         
         # Create Flask app
         self.app = Flask(__name__)
@@ -160,6 +498,12 @@ class NepalStockApp:
             logger.info(f"Application initialized with {initial_counts['stocks']} stocks and {initial_counts['ipos']} IPOs/FPOs/Rights")
         except Exception as e:
             logger.warning(f"Initial scrape failed: {e}")
+        
+        # Start intelligent scheduler
+        try:
+            self.smart_scheduler.start()
+        except Exception as e:
+            logger.error(f"Failed to start intelligent scheduler: {e}")
     
     def _ensure_admin_key(self):
         """Ensure at least one admin key exists"""
@@ -209,7 +553,7 @@ class NepalStockApp:
         # Public routes
         @self.app.route('/api/health', methods=['GET'])
         def health_check():
-            """Flutter-ready health check endpoint"""
+            """Flutter-ready health check endpoint with scheduler status"""
             try:
                 stock_count = self.price_service.get_stock_count()
                 market_status = self.price_service.get_market_status()
@@ -218,6 +562,9 @@ class NepalStockApp:
                 
                 # Get IPO statistics using the updated service
                 ipo_stats = self.ipo_service.get_statistics()
+                
+                # Get scheduler status
+                scheduler_status = self.smart_scheduler.get_scheduler_status()
                 
                 platform = "Railway" if self.is_railway else "Local"
                 
@@ -246,6 +593,7 @@ class NepalStockApp:
                     'ipo_statistics': ipo_stats['summary'],  # Flutter-ready summary
                     'ipo_by_category': ipo_stats['by_category'],  # IPO/FPO/Rights breakdown
                     'market_status': market_status,
+                    'scheduler_status': scheduler_status,  # New: Scheduler information
                     'last_stock_scrape': last_scrape.isoformat() if last_scrape else None,
                     'last_ipo_scrape': last_ipo_scrape.isoformat() if last_ipo_scrape else None,
                     'timestamp': datetime.now().isoformat(),
@@ -261,14 +609,44 @@ class NepalStockApp:
                     'flutter_ready': True
                 }), 500
         
+        @self.app.route('/api/scheduler/status', methods=['GET'])
+        @self.require_auth
+        def get_scheduler_status():
+            """Get detailed scheduler status"""
+            try:
+                status = self.smart_scheduler.get_scheduler_status()
+                return jsonify({
+                    'success': True,
+                    'scheduler_status': status,
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                })
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'flutter_ready': True
+                }), 500
+        
         @self.app.route('/api/market-status', methods=['GET'])
         def get_market_status():
             """Get market status endpoint"""
             try:
                 market_status = self.price_service.get_market_status()
+                nepal_time = self.smart_scheduler._get_current_nepal_time()
+                
+                # Enhanced market status with scheduler insights
+                enhanced_status = {
+                    **market_status,
+                    'nepal_time': nepal_time.isoformat(),
+                    'is_market_day': self.smart_scheduler._is_market_day(nepal_time),
+                    'is_market_hours': self.smart_scheduler._is_market_hours(nepal_time),
+                    'should_be_open': self.smart_scheduler._is_market_open(nepal_time)
+                }
+                
                 return jsonify({
                     'success': True,
-                    'market_status': market_status,
+                    'market_status': enhanced_status,
                     'timestamp': datetime.now().isoformat(),
                     'flutter_ready': True
                 })
@@ -806,6 +1184,13 @@ class NepalStockApp:
                         'by_category': {}
                     }
                 
+                # Get scheduler status
+                try:
+                    scheduler_status = self.smart_scheduler.get_scheduler_status()
+                except Exception as e:
+                    logger.warning(f"Error getting scheduler status: {e}")
+                    scheduler_status = {'error': str(e)}
+                
                 stats = {
                     'active_keys': active_keys,
                     'total_keys': len(all_keys),
@@ -814,6 +1199,7 @@ class NepalStockApp:
                     'stock_count': stock_count,
                     'issue_statistics': issue_stats['summary'],
                     'issues_by_category': issue_stats['by_category'],
+                    'scheduler_status': scheduler_status,
                     'timestamp': datetime.now().isoformat(),
                     'flutter_ready': True
                 }
@@ -826,6 +1212,65 @@ class NepalStockApp:
                 
             except Exception as e:
                 logger.error(f"Error getting admin stats: {e}")
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'flutter_ready': True
+                }), 500
+        
+        # New admin endpoint to control scheduler
+        @self.app.route('/api/admin/scheduler/control', methods=['POST'])
+        @self.require_auth
+        @self.require_admin
+        def admin_scheduler_control():
+            """Control scheduler (start/stop/restart) - Admin only"""
+            try:
+                data = request.get_json() or {}
+                action = data.get('action', '').lower()
+                
+                if action not in ['start', 'stop', 'restart', 'force_scrape']:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Invalid action. Must be start, stop, restart, or force_scrape',
+                        'flutter_ready': True
+                    }), 400
+                
+                if action == 'stop':
+                    self.smart_scheduler.stop()
+                    message = 'Scheduler stopped successfully'
+                    
+                elif action == 'start':
+                    if not self.smart_scheduler.scheduler.running:
+                        self.smart_scheduler.start()
+                        message = 'Scheduler started successfully'
+                    else:
+                        message = 'Scheduler is already running'
+                        
+                elif action == 'restart':
+                    self.smart_scheduler.stop()
+                    self.smart_scheduler.start()
+                    message = 'Scheduler restarted successfully'
+                    
+                elif action == 'force_scrape':
+                    # Force a scrape regardless of market conditions
+                    logger.info(f"Force scrape triggered by admin {request.auth_info['key_id']}")
+                    self.smart_scheduler.scheduled_scrape()
+                    message = 'Force scrape executed successfully'
+                
+                # Get updated status
+                status = self.smart_scheduler.get_scheduler_status()
+                
+                return jsonify({
+                    'success': True,
+                    'message': message,
+                    'action': action,
+                    'scheduler_status': status,
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                })
+                
+            except Exception as e:
+                logger.error(f"Error controlling scheduler: {e}")
                 return jsonify({
                     'success': False,
                     'error': str(e),
@@ -871,10 +1316,10 @@ class NepalStockApp:
         db_type = self.db_service.db_type.upper()
         platform = "Railway" if self.is_railway else "Local"
         
-        logger.info(f"Starting Flutter-ready Nepal Stock API on {platform}")
+        logger.info(f"Starting Flutter-ready Nepal Stock API with Intelligent Scheduler on {platform}")
         logger.info(f"Host: {self.flask_host}, Port: {self.flask_port}")
         logger.info(f"Database: {db_type}")
-        logger.info("Features: Stock prices, IPO/FPO/Rights tracking (separate tables)")
+        logger.info("Features: Stock prices, IPO/FPO/Rights tracking, Smart scheduled scraping")
         
         try:
             stock_count = self.price_service.get_stock_count()
@@ -886,8 +1331,27 @@ class NepalStockApp:
             
             market_status = self.price_service.get_market_status()
             logger.info(f"Market status: {market_status['status']}")
+            
+            scheduler_status = self.smart_scheduler.get_scheduler_status()
+            logger.info(f"Scheduler running: {scheduler_status.get('scheduler_running', False)}")
+            if scheduler_status.get('next_run'):
+                logger.info(f"Next scheduled scrape: {scheduler_status['next_run']}")
+                
         except Exception as e:
             logger.warning(f"Could not get initial stats: {e}")
+        
+        # Graceful shutdown handler
+        import signal
+        import sys
+        
+        def signal_handler(sig, frame):
+            logger.info('Shutting down gracefully...')
+            if hasattr(self, 'smart_scheduler'):
+                self.smart_scheduler.stop()
+            sys.exit(0)
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
         
         self.app.run(
             host=self.flask_host,
@@ -901,7 +1365,7 @@ def create_app():
     """Factory function for Gunicorn"""
     try:
         nepal_app = NepalStockApp()
-        logger.info("Flutter-ready application factory completed successfully")
+        logger.info("Flutter-ready application with intelligent scheduler factory completed successfully")
         return nepal_app.app
     except Exception as e:
         logger.error(f"Application factory failed: {e}")
