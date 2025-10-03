@@ -1,4 +1,4 @@
-# nepali_paisa_scraper_separate_tables.py - Version with separate tables for IPO, FPO, Rights
+# scraping_service.py - Version with separate tables for IPO, FPO, Rights
 
 import requests
 from bs4 import BeautifulSoup
