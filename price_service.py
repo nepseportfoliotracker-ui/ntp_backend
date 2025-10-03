@@ -1,4 +1,4 @@
-# price_service.py - Fixed version with MySQL/SQLite support
+# price_service.py - Simplified SQLite-only version
 
 import sqlite3
 import logging
@@ -10,14 +10,13 @@ class PriceService:
     """Handle all stock price data operations and market information"""
     
     def __init__(self, db_service):
-        """Initialize with DatabaseService instead of just db_path"""
+        """Initialize with DatabaseService"""
         self.db_service = db_service
-        self.db_type = db_service.db_type
         self.market_hours = MarketHours()
         self._init_price_tables()
     
     def _get_connection(self):
-        """Get database connection using the database service"""
+        """Get database connection"""
         return self.db_service.get_connection()
     
     def _init_price_tables(self):
@@ -25,123 +24,65 @@ class PriceService:
         conn = self._get_connection()
         cursor = conn.cursor()
         
-        if self.db_type == 'sqlite':
-            # SQLite version
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS stocks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol TEXT NOT NULL,
-                    company_name TEXT,
-                    ltp REAL,
-                    change_val REAL,
-                    change_percent REAL,
-                    high REAL,
-                    low REAL,
-                    open_price REAL,
-                    prev_close REAL,
-                    qty INTEGER,
-                    turnover REAL,
-                    trades INTEGER DEFAULT 0,
-                    source TEXT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    is_latest BOOLEAN DEFAULT TRUE
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS market_summary (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    total_turnover REAL,
-                    total_trades INTEGER,
-                    total_scrips INTEGER,
-                    advancing INTEGER DEFAULT 0,
-                    declining INTEGER DEFAULT 0,
-                    unchanged INTEGER DEFAULT 0,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    is_latest BOOLEAN DEFAULT TRUE
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS price_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol TEXT NOT NULL,
-                    date DATE,
-                    open_price REAL,
-                    high REAL,
-                    low REAL,
-                    close_price REAL,
-                    volume INTEGER,
-                    turnover REAL,
-                    UNIQUE(symbol, date)
-                )
-            ''')
-            
-            # Create indexes for SQLite
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_stocks_symbol_latest ON stocks(symbol, is_latest)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_stocks_timestamp ON stocks(timestamp)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_price_history_symbol_date ON price_history(symbol, date)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_market_summary_latest ON market_summary(is_latest)')
-            
-        else:  # MySQL
-            # MySQL version
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS stocks (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    symbol VARCHAR(10) NOT NULL,
-                    company_name VARCHAR(200),
-                    ltp DECIMAL(10,2),
-                    change_val DECIMAL(10,2),
-                    change_percent DECIMAL(8,4),
-                    high DECIMAL(10,2),
-                    low DECIMAL(10,2),
-                    open_price DECIMAL(10,2),
-                    prev_close DECIMAL(10,2),
-                    qty INT,
-                    turnover DECIMAL(15,2),
-                    trades INT DEFAULT 0,
-                    source VARCHAR(100),
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    is_latest BOOLEAN DEFAULT TRUE,
-                    INDEX idx_symbol_latest (symbol, is_latest),
-                    INDEX idx_timestamp (timestamp)
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS market_summary (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    total_turnover DECIMAL(18,2),
-                    total_trades INT,
-                    total_scrips INT,
-                    advancing INT DEFAULT 0,
-                    declining INT DEFAULT 0,
-                    unchanged INT DEFAULT 0,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    is_latest BOOLEAN DEFAULT TRUE,
-                    INDEX idx_latest (is_latest)
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS price_history (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    symbol VARCHAR(10) NOT NULL,
-                    date DATE,
-                    open_price DECIMAL(10,2),
-                    high DECIMAL(10,2),
-                    low DECIMAL(10,2),
-                    close_price DECIMAL(10,2),
-                    volume INT,
-                    turnover DECIMAL(15,2),
-                    UNIQUE KEY unique_symbol_date (symbol, date),
-                    INDEX idx_symbol_date (symbol, date)
-                )
-            ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS stocks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                company_name TEXT,
+                ltp REAL,
+                change_val REAL,
+                change_percent REAL,
+                high REAL,
+                low REAL,
+                open_price REAL,
+                prev_close REAL,
+                qty INTEGER,
+                turnover REAL,
+                trades INTEGER DEFAULT 0,
+                source TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                is_latest BOOLEAN DEFAULT TRUE
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS market_summary (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                total_turnover REAL,
+                total_trades INTEGER,
+                total_scrips INTEGER,
+                advancing INTEGER DEFAULT 0,
+                declining INTEGER DEFAULT 0,
+                unchanged INTEGER DEFAULT 0,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                is_latest BOOLEAN DEFAULT TRUE
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS price_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                date DATE,
+                open_price REAL,
+                high REAL,
+                low REAL,
+                close_price REAL,
+                volume INTEGER,
+                turnover REAL,
+                UNIQUE(symbol, date)
+            )
+        ''')
+        
+        # Create indexes
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_stocks_symbol_latest ON stocks(symbol, is_latest)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_stocks_timestamp ON stocks(timestamp)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_price_history_symbol_date ON price_history(symbol, date)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_market_summary_latest ON market_summary(is_latest)')
         
         conn.commit()
         conn.close()
-        logger.info(f"Price tables initialized ({self.db_type})")
+        logger.info("Price tables initialized (SQLite)")
     
     def save_stock_prices(self, stock_data_list, source_name):
         """Save stock price data to database"""
@@ -165,51 +106,27 @@ class PriceService:
                     if not self._validate_stock_data(stock_data):
                         continue
                     
-                    # Save stock data with database-specific queries
-                    if self.db_type == 'sqlite':
-                        cursor.execute('''
-                            INSERT INTO stocks 
-                            (symbol, company_name, ltp, change_val, change_percent, high, low, 
-                             open_price, prev_close, qty, turnover, trades, source, timestamp, is_latest)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)
-                        ''', (
-                            stock_data['symbol'][:10],
-                            stock_data.get('company_name', stock_data['symbol'])[:100],
-                            stock_data['ltp'],
-                            stock_data.get('change', 0),
-                            stock_data.get('change_percent', 0),
-                            stock_data.get('high', stock_data['ltp']),
-                            stock_data.get('low', stock_data['ltp']),
-                            stock_data.get('open_price', stock_data['ltp']),
-                            stock_data.get('prev_close', stock_data['ltp']),
-                            stock_data.get('qty', 0),
-                            stock_data.get('turnover', 0),
-                            stock_data.get('trades', 0),
-                            source_name,
-                            datetime.now()
-                        ))
-                    else:  # MySQL
-                        cursor.execute('''
-                            INSERT INTO stocks 
-                            (symbol, company_name, ltp, change_val, change_percent, high, low, 
-                             open_price, prev_close, qty, turnover, trades, source, timestamp, is_latest)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
-                        ''', (
-                            stock_data['symbol'][:10],
-                            stock_data.get('company_name', stock_data['symbol'])[:200],
-                            stock_data['ltp'],
-                            stock_data.get('change', 0),
-                            stock_data.get('change_percent', 0),
-                            stock_data.get('high', stock_data['ltp']),
-                            stock_data.get('low', stock_data['ltp']),
-                            stock_data.get('open_price', stock_data['ltp']),
-                            stock_data.get('prev_close', stock_data['ltp']),
-                            stock_data.get('qty', 0),
-                            stock_data.get('turnover', 0),
-                            stock_data.get('trades', 0),
-                            source_name,
-                            datetime.now()
-                        ))
+                    cursor.execute('''
+                        INSERT INTO stocks 
+                        (symbol, company_name, ltp, change_val, change_percent, high, low, 
+                         open_price, prev_close, qty, turnover, trades, source, timestamp, is_latest)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)
+                    ''', (
+                        stock_data['symbol'][:10],
+                        stock_data.get('company_name', stock_data['symbol'])[:100],
+                        stock_data['ltp'],
+                        stock_data.get('change', 0),
+                        stock_data.get('change_percent', 0),
+                        stock_data.get('high', stock_data['ltp']),
+                        stock_data.get('low', stock_data['ltp']),
+                        stock_data.get('open_price', stock_data['ltp']),
+                        stock_data.get('prev_close', stock_data['ltp']),
+                        stock_data.get('qty', 0),
+                        stock_data.get('turnover', 0),
+                        stock_data.get('trades', 0),
+                        source_name,
+                        datetime.now()
+                    ))
                     
                     # Update market statistics
                     change = stock_data.get('change', 0)
@@ -230,18 +147,11 @@ class PriceService:
             
             # Save market summary
             if saved_count > 0:
-                if self.db_type == 'sqlite':
-                    cursor.execute('''
-                        INSERT INTO market_summary 
-                        (total_turnover, total_trades, total_scrips, advancing, declining, unchanged, is_latest)
-                        VALUES (?, ?, ?, ?, ?, ?, TRUE)
-                    ''', (total_turnover, total_trades, saved_count, advancing, declining, unchanged))
-                else:  # MySQL
-                    cursor.execute('''
-                        INSERT INTO market_summary 
-                        (total_turnover, total_trades, total_scrips, advancing, declining, unchanged, is_latest)
-                        VALUES (%s, %s, %s, %s, %s, %s, TRUE)
-                    ''', (total_turnover, total_trades, saved_count, advancing, declining, unchanged))
+                cursor.execute('''
+                    INSERT INTO market_summary 
+                    (total_turnover, total_trades, total_scrips, advancing, declining, unchanged, is_latest)
+                    VALUES (?, ?, ?, ?, ?, ?, TRUE)
+                ''', (total_turnover, total_trades, saved_count, advancing, declining, unchanged))
             
             conn.commit()
             logger.info(f"Saved {saved_count}/{len(stock_data_list)} stocks from {source_name}")
@@ -260,7 +170,7 @@ class PriceService:
             return False
         
         ltp = float(stock_data['ltp'])
-        if ltp <= 0 or ltp > 10000:  # Reasonable bounds
+        if ltp <= 0 or ltp > 10000:
             return False
         
         symbol = str(stock_data['symbol']).strip().upper()
@@ -302,26 +212,15 @@ class PriceService:
         cursor = conn.cursor()
         
         try:
-            if self.db_type == 'sqlite':
-                cursor.execute('''
-                    SELECT symbol, company_name, ltp, change_val, change_percent, 
-                           high, low, open_price, prev_close, qty, turnover, 
-                           trades, source, timestamp
-                    FROM stocks 
-                    WHERE symbol = ? AND is_latest = TRUE 
-                    ORDER BY timestamp DESC 
-                    LIMIT 1
-                ''', (symbol.upper(),))
-            else:  # MySQL
-                cursor.execute('''
-                    SELECT symbol, company_name, ltp, change_val, change_percent, 
-                           high, low, open_price, prev_close, qty, turnover, 
-                           trades, source, timestamp
-                    FROM stocks 
-                    WHERE symbol = %s AND is_latest = TRUE 
-                    ORDER BY timestamp DESC 
-                    LIMIT 1
-                ''', (symbol.upper(),))
+            cursor.execute('''
+                SELECT symbol, company_name, ltp, change_val, change_percent, 
+                       high, low, open_price, prev_close, qty, turnover, 
+                       trades, source, timestamp
+                FROM stocks 
+                WHERE symbol = ? AND is_latest = TRUE 
+                ORDER BY timestamp DESC 
+                LIMIT 1
+            ''', (symbol.upper(),))
             
             row = cursor.fetchone()
             if row:
@@ -339,22 +238,13 @@ class PriceService:
         cursor = conn.cursor()
         
         try:
-            if self.db_type == 'sqlite':
-                cursor.execute('''
-                    SELECT symbol, company_name, ltp, change_val, change_percent
-                    FROM stocks 
-                    WHERE is_latest = TRUE AND change_val > 0
-                    ORDER BY change_percent DESC 
-                    LIMIT ?
-                ''', (limit,))
-            else:  # MySQL
-                cursor.execute('''
-                    SELECT symbol, company_name, ltp, change_val, change_percent
-                    FROM stocks 
-                    WHERE is_latest = TRUE AND change_val > 0
-                    ORDER BY change_percent DESC 
-                    LIMIT %s
-                ''', (limit,))
+            cursor.execute('''
+                SELECT symbol, company_name, ltp, change_val, change_percent
+                FROM stocks 
+                WHERE is_latest = TRUE AND change_val > 0
+                ORDER BY change_percent DESC 
+                LIMIT ?
+            ''', (limit,))
             
             gainers = []
             for row in cursor.fetchall():
@@ -375,22 +265,13 @@ class PriceService:
         cursor = conn.cursor()
         
         try:
-            if self.db_type == 'sqlite':
-                cursor.execute('''
-                    SELECT symbol, company_name, ltp, change_val, change_percent
-                    FROM stocks 
-                    WHERE is_latest = TRUE AND change_val < 0
-                    ORDER BY change_percent ASC 
-                    LIMIT ?
-                ''', (limit,))
-            else:  # MySQL
-                cursor.execute('''
-                    SELECT symbol, company_name, ltp, change_val, change_percent
-                    FROM stocks 
-                    WHERE is_latest = TRUE AND change_val < 0
-                    ORDER BY change_percent ASC 
-                    LIMIT %s
-                ''', (limit,))
+            cursor.execute('''
+                SELECT symbol, company_name, ltp, change_val, change_percent
+                FROM stocks 
+                WHERE is_latest = TRUE AND change_val < 0
+                ORDER BY change_percent ASC 
+                LIMIT ?
+            ''', (limit,))
             
             losers = []
             for row in cursor.fetchall():
@@ -411,22 +292,13 @@ class PriceService:
         cursor = conn.cursor()
         
         try:
-            if self.db_type == 'sqlite':
-                cursor.execute('''
-                    SELECT symbol, company_name, ltp, turnover, qty
-                    FROM stocks 
-                    WHERE is_latest = TRUE
-                    ORDER BY turnover DESC 
-                    LIMIT ?
-                ''', (limit,))
-            else:  # MySQL
-                cursor.execute('''
-                    SELECT symbol, company_name, ltp, turnover, qty
-                    FROM stocks 
-                    WHERE is_latest = TRUE
-                    ORDER BY turnover DESC 
-                    LIMIT %s
-                ''', (limit,))
+            cursor.execute('''
+                SELECT symbol, company_name, ltp, turnover, qty
+                FROM stocks 
+                WHERE is_latest = TRUE
+                ORDER BY turnover DESC 
+                LIMIT ?
+            ''', (limit,))
             
             active = []
             for row in cursor.fetchall():
@@ -468,7 +340,6 @@ class PriceService:
                     'timestamp': row[6]
                 }
             
-            # Fallback calculation if no summary exists
             return self._calculate_market_summary(cursor)
         finally:
             conn.close()
@@ -512,24 +383,14 @@ class PriceService:
         
         try:
             search_term = f"%{query.upper()}%"
-            if self.db_type == 'sqlite':
-                cursor.execute('''
-                    SELECT symbol, company_name, ltp, change_val, change_percent
-                    FROM stocks 
-                    WHERE is_latest = TRUE 
-                    AND (symbol LIKE ? OR UPPER(company_name) LIKE ?)
-                    ORDER BY symbol
-                    LIMIT ?
-                ''', (search_term, search_term, limit))
-            else:  # MySQL
-                cursor.execute('''
-                    SELECT symbol, company_name, ltp, change_val, change_percent
-                    FROM stocks 
-                    WHERE is_latest = TRUE 
-                    AND (symbol LIKE %s OR UPPER(company_name) LIKE %s)
-                    ORDER BY symbol
-                    LIMIT %s
-                ''', (search_term, search_term, limit))
+            cursor.execute('''
+                SELECT symbol, company_name, ltp, change_val, change_percent
+                FROM stocks 
+                WHERE is_latest = TRUE 
+                AND (symbol LIKE ? OR UPPER(company_name) LIKE ?)
+                ORDER BY symbol
+                LIMIT ?
+            ''', (search_term, search_term, limit))
             
             results = []
             for row in cursor.fetchall():
@@ -564,20 +425,12 @@ class PriceService:
         
         try:
             since_date = datetime.now() - timedelta(days=days)
-            if self.db_type == 'sqlite':
-                cursor.execute('''
-                    SELECT date, open_price, high, low, close_price, volume, turnover
-                    FROM price_history 
-                    WHERE symbol = ? AND date >= ?
-                    ORDER BY date DESC
-                ''', (symbol.upper(), since_date.date()))
-            else:  # MySQL
-                cursor.execute('''
-                    SELECT date, open_price, high, low, close_price, volume, turnover
-                    FROM price_history 
-                    WHERE symbol = %s AND date >= %s
-                    ORDER BY date DESC
-                ''', (symbol.upper(), since_date.date()))
+            cursor.execute('''
+                SELECT date, open_price, high, low, close_price, volume, turnover
+                FROM price_history 
+                WHERE symbol = ? AND date >= ?
+                ORDER BY date DESC
+            ''', (symbol.upper(), since_date.date()))
             
             history = []
             for row in cursor.fetchall():
@@ -607,8 +460,8 @@ class MarketHours:
         self.nepal_tz = timezone(timedelta(hours=5, minutes=45))
         
         # NEPSE trading hours (Sunday to Thursday, 12:00 PM to 3:00 PM)
-        self.market_open_time = time(12, 0)  # 12:00 PM
-        self.market_close_time = time(15, 0)  # 3:00 PM
+        self.market_open_time = time(12, 0)
+        self.market_close_time = time(15, 0)
         
         # Trading days (0=Monday, 6=Sunday)
         self.trading_days = [6, 0, 1, 2, 3]  # Sunday to Thursday
