@@ -581,8 +581,471 @@ class NepalStockApp:
                     'flutter_ready': True
                 }), 500
         
-        # Add more endpoints as needed (gainers, losers, search, etc.)
-        # ... (include all other endpoints from your original file)
+        @self.app.route('/api/stocks/<symbol>', methods=['GET'])
+        @self.require_auth
+        def get_stock_by_symbol(symbol):
+            """Get specific stock data by symbol"""
+            try:
+                data = self.price_service.get_stock_by_symbol(symbol)
+                if data:
+                    return jsonify({
+                        'success': True,
+                        'data': data,
+                        'market_status': self.price_service.get_market_status(),
+                        'timestamp': datetime.now().isoformat(),
+                        'flutter_ready': True
+                    })
+                else:
+                    return jsonify({
+                        'success': False,
+                        'error': f'Stock {symbol.upper()} not found',
+                        'flutter_ready': True
+                    }), 404
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'flutter_ready': True
+                }), 500
+        
+        @self.app.route('/api/stocks/search', methods=['GET'])
+        @self.require_auth
+        def search_stocks():
+            """Search stocks"""
+            try:
+                query = request.args.get('q', '').strip()
+                if not query or len(query) < 2:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Search query must be at least 2 characters',
+                        'flutter_ready': True
+                    }), 400
+                
+                limit = min(int(request.args.get('limit', 20)), 100)
+                results = self.price_service.search_stocks(query, limit)
+                
+                return jsonify({
+                    'success': True,
+                    'data': results,
+                    'count': len(results),
+                    'query': query,
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                })
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'flutter_ready': True
+                }), 500
+        
+        @self.app.route('/api/stocks/gainers', methods=['GET'])
+        @self.require_auth
+        def get_top_gainers():
+            """Get top gaining stocks"""
+            try:
+                limit = min(int(request.args.get('limit', 10)), 50)
+                gainers = self.price_service.get_top_gainers(limit)
+                
+                return jsonify({
+                    'success': True,
+                    'data': gainers,
+                    'count': len(gainers),
+                    'category': 'gainers',
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                })
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
+        
+        @self.app.route('/api/stocks/losers', methods=['GET'])
+        @self.require_auth
+        def get_top_losers():
+            """Get top losing stocks"""
+            try:
+                limit = min(int(request.args.get('limit', 10)), 50)
+                losers = self.price_service.get_top_losers(limit)
+                
+                return jsonify({
+                    'success': True,
+                    'data': losers,
+                    'count': len(losers),
+                    'category': 'losers',
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                })
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
+        
+        @self.app.route('/api/stocks/active', methods=['GET'])
+        @self.require_auth
+        def get_most_active():
+            """Get most actively traded stocks"""
+            try:
+                limit = min(int(request.args.get('limit', 10)), 50)
+                active = self.price_service.get_most_active(limit)
+                
+                return jsonify({
+                    'success': True,
+                    'data': active,
+                    'count': len(active),
+                    'category': 'active',
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                })
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
+        
+        @self.app.route('/api/market-summary', methods=['GET'])
+        @self.require_auth
+        def get_market_summary():
+            """Get market summary statistics"""
+            try:
+                summary = self.price_service.get_market_summary()
+                return jsonify({
+                    'success': True,
+                    'data': summary,
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                })
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
+        
+        @self.app.route('/api/issues/ipos', methods=['GET'])
+        @self.require_auth
+        def get_ipos_only():
+            """Get IPOs only"""
+            try:
+                data = self.ipo_service.get_all_ipos()
+                return jsonify({
+                    'success': True,
+                    'data': data,
+                    'count': len(data),
+                    'category': 'IPO',
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                })
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
+        
+        @self.app.route('/api/issues/fpos', methods=['GET'])
+        @self.require_auth
+        def get_fpos_only():
+            """Get FPOs only"""
+            try:
+                data = self.ipo_service.get_all_fpos()
+                return jsonify({
+                    'success': True,
+                    'data': data,
+                    'count': len(data),
+                    'category': 'FPO',
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                })
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
+        
+        @self.app.route('/api/issues/rights', methods=['GET'])
+        @self.require_auth
+        def get_rights_only():
+            """Get Rights/Dividends only"""
+            try:
+                data = self.ipo_service.get_all_rights_dividends()
+                return jsonify({
+                    'success': True,
+                    'data': data,
+                    'count': len(data),
+                    'category': 'Rights',
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                })
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
+        
+        @self.app.route('/api/issues/open', methods=['GET'])
+        @self.require_auth
+        def get_open_issues():
+            """Get currently open issues"""
+            try:
+                category = request.args.get('category')
+                data = self.ipo_service.get_open_issues(category)
+                
+                return jsonify({
+                    'success': True,
+                    'data': data,
+                    'count': len(data),
+                    'status': 'open',
+                    'category_filter': category,
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                })
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
+        
+        @self.app.route('/api/issues/coming-soon', methods=['GET'])
+        @self.require_auth
+        def get_coming_soon_issues():
+            """Get coming soon issues"""
+            try:
+                data = self.ipo_service.get_coming_soon_issues()
+                return jsonify({
+                    'success': True,
+                    'data': data,
+                    'count': len(data),
+                    'status': 'coming_soon',
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                })
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
+        
+        @self.app.route('/api/issues/search', methods=['GET'])
+        @self.require_auth
+        def search_issues():
+            """Search all issues"""
+            try:
+                query = request.args.get('q', '').strip()
+                if not query or len(query) < 2:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Search query must be at least 2 characters',
+                        'flutter_ready': True
+                    }), 400
+                
+                limit = min(int(request.args.get('limit', 20)), 100)
+                results = self.ipo_service.search_issues(query, limit)
+                
+                return jsonify({
+                    'success': True,
+                    'data': results,
+                    'count': len(results),
+                    'query': query,
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                })
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
+        
+        @self.app.route('/api/issues/statistics', methods=['GET'])
+        @self.require_auth
+        def get_issue_statistics():
+            """Get detailed statistics"""
+            try:
+                stats = self.ipo_service.get_statistics()
+                return jsonify({
+                    'success': True,
+                    'statistics': stats,
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                })
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
+        
+        @self.app.route('/api/trigger-scrape', methods=['POST'])
+        @self.require_auth
+        def trigger_scrape():
+            """Manually trigger scraping"""
+            try:
+                data = request.get_json() or {}
+                force = data.get('force', True)
+                scrape_type = data.get('type', 'all')
+                
+                results = {}
+                
+                if scrape_type in ['stocks', 'all']:
+                    stock_count = self.scraping_service.scrape_all_sources(force=force)
+                    results['stocks'] = stock_count
+                
+                if scrape_type in ['issues', 'ipos', 'all']:
+                    ipo_count = self.scraping_service.scrape_ipo_sources(force=force)
+                    results['issues'] = ipo_count
+                
+                total_count = sum(results.values())
+                
+                return jsonify({
+                    'success': True,
+                    'message': f'Scraping completed. {total_count} total items updated.',
+                    'results': results,
+                    'total_count': total_count,
+                    'scrape_type': scrape_type,
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                }), 201
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'flutter_ready': True
+                }), 500
+        
+        @self.app.route('/api/key-info', methods=['GET'])
+        @self.require_auth
+        def get_key_info():
+            """Get information about the authenticated key"""
+            try:
+                key_info = self.auth_service.get_key_details(request.auth_info['key_id'])
+                if key_info:
+                    return jsonify({
+                        'success': True,
+                        'key_info': key_info,
+                        'flutter_ready': True
+                    })
+                else:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Key information not found',
+                        'flutter_ready': True
+                    }), 404
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'flutter_ready': True
+                }), 500
+        
+        @self.app.route('/api/admin/generate-key', methods=['POST'])
+        @self.require_auth
+        @self.require_admin
+        def admin_generate_key():
+            """Generate new API key (admin only)"""
+            try:
+                data = request.get_json() or {}
+                key_type = data.get('key_type', 'regular')
+                description = data.get('description', '')
+                
+                if key_type not in ['admin', 'regular']:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Invalid key type',
+                        'flutter_ready': True
+                    }), 400
+                
+                key_pair = self.auth_service.generate_api_key(
+                    key_type=key_type,
+                    created_by=request.auth_info['key_id'],
+                    description=description
+                )
+                
+                if key_pair:
+                    return jsonify({
+                        'success': True,
+                        'key_pair': key_pair,
+                        'flutter_ready': True
+                    })
+                else:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Failed to generate key',
+                        'flutter_ready': True
+                    }), 500
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'flutter_ready': True
+                }), 500
+        
+        @self.app.route('/api/admin/stats', methods=['GET'])
+        @self.require_auth
+        @self.require_admin
+        def admin_get_stats():
+            """Get system statistics (admin only)"""
+            try:
+                usage_stats = self.auth_service.get_usage_stats(days=1)
+                total_requests_24h = sum(usage_stats.values()) if usage_stats else 0
+                
+                all_keys = self.auth_service.list_all_keys()
+                active_keys = len([k for k in all_keys if k['is_active']])
+                
+                active_sessions = 0
+                try:
+                    conn = self.db_service.get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute('SELECT COUNT(*) FROM device_sessions WHERE is_active = 1')
+                    result = cursor.fetchone()
+                    active_sessions = result[0] if result else 0
+                    conn.close()
+                except Exception as e:
+                    logger.warning(f"Error counting sessions: {e}")
+                
+                stock_count = self.price_service.get_stock_count()
+                issue_stats = self.ipo_service.get_statistics()
+                scheduler_status = self.smart_scheduler.get_scheduler_status()
+                
+                stats = {
+                    'active_keys': active_keys,
+                    'total_keys': len(all_keys),
+                    'active_sessions': active_sessions,
+                    'requests_24h': total_requests_24h,
+                    'stock_count': stock_count,
+                    'issue_statistics': issue_stats['summary'],
+                    'issues_by_category': issue_stats['by_category'],
+                    'scheduler_status': scheduler_status,
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                }
+                
+                return jsonify({
+                    'success': True,
+                    'stats': stats,
+                    'flutter_ready': True
+                })
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'flutter_ready': True
+                }), 500
+        
+        @self.app.route('/api/admin/scheduler/control', methods=['POST'])
+        @self.require_auth
+        @self.require_admin
+        def admin_scheduler_control():
+            """Control scheduler (admin only)"""
+            try:
+                data = request.get_json() or {}
+                action = data.get('action', '').lower()
+                
+                if action not in ['start', 'stop', 'restart', 'force_scrape']:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Invalid action',
+                        'flutter_ready': True
+                    }), 400
+                
+                if action == 'stop':
+                    self.smart_scheduler.stop()
+                    message = 'Scheduler stopped'
+                elif action == 'start':
+                    if not self.smart_scheduler.scheduler.running:
+                        self.smart_scheduler.start()
+                        message = 'Scheduler started'
+                    else:
+                        message = 'Scheduler already running'
+                elif action == 'restart':
+                    self.smart_scheduler.stop()
+                    self.smart_scheduler.start()
+                    message = 'Scheduler restarted'
+                elif action == 'force_scrape':
+                    self.smart_scheduler.scheduled_scrape()
+                    message = 'Force scrape executed'
+                
+                status = self.smart_scheduler.get_scheduler_status()
+                
+                return jsonify({
+                    'success': True,
+                    'message': message,
+                    'action': action,
+                    'scheduler_status': status,
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                })
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'flutter_ready': True
+                }), 500
         
         # Error handlers
         @self.app.errorhandler(404)
