@@ -1,4 +1,4 @@
-# auth_service.py - Simplified SQLite-only version
+# auth_service.py - Complete SQLite version with POST support
 
 import sqlite3
 import hashlib
@@ -64,9 +64,11 @@ class AuthService:
                 key_id TEXT,
                 device_id TEXT,
                 endpoint TEXT,
+                method TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 ip_address TEXT,
                 user_agent TEXT,
+                status_code INTEGER,
                 FOREIGN KEY (key_id) REFERENCES api_keys (key_id) ON DELETE SET NULL
             )
         ''')
@@ -113,7 +115,8 @@ class AuthService:
         finally:
             conn.close()
     
-    def validate_request(self, api_key, device_id, device_info='', endpoint='', ip_address='', user_agent=''):
+    def validate_request(self, api_key, device_id, device_info='', endpoint='', 
+                        method='GET', ip_address='', user_agent='', status_code=None):
         """Validate API request and manage device sessions"""
         if not api_key or not device_id:
             return {'valid': False, 'error': 'Missing API key or device ID'}
@@ -132,7 +135,9 @@ class AuthService:
             
             key_record = cursor.fetchone()
             if not key_record:
-                self._log_request(cursor, None, device_id, endpoint, ip_address, user_agent)
+                self._log_request(cursor, None, device_id, endpoint, method, 
+                                ip_address, user_agent, 401)
+                conn.commit()
                 return {'valid': False, 'error': 'Invalid API key'}
             
             key_id, key_type, max_devices, is_active = key_record
@@ -147,11 +152,14 @@ class AuthService:
             )
             
             if not session_result['success']:
-                self._log_request(cursor, key_id, device_id, endpoint, ip_address, user_agent)
+                self._log_request(cursor, key_id, device_id, endpoint, method,
+                                ip_address, user_agent, 403)
+                conn.commit()
                 return {'valid': False, 'error': session_result['error']}
             
             # Log successful request
-            self._log_request(cursor, key_id, device_id, endpoint, ip_address, user_agent)
+            self._log_request(cursor, key_id, device_id, endpoint, method,
+                            ip_address, user_agent, status_code or 200)
             conn.commit()
             
             return {
@@ -201,13 +209,15 @@ class AuthService:
         
         return {'success': True}
     
-    def _log_request(self, cursor, key_id, device_id, endpoint, ip_address, user_agent):
+    def _log_request(self, cursor, key_id, device_id, endpoint, method, 
+                    ip_address, user_agent, status_code):
         """Log API request"""
         try:
             cursor.execute('''
-                INSERT INTO api_logs (key_id, device_id, endpoint, ip_address, user_agent)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (key_id, device_id, endpoint, ip_address, user_agent))
+                INSERT INTO api_logs (key_id, device_id, endpoint, method, 
+                                     ip_address, user_agent, status_code)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (key_id, device_id, endpoint, method, ip_address, user_agent, status_code))
         except Exception as e:
             logger.warning(f"Failed to log API request: {e}")
     
@@ -293,6 +303,22 @@ class AuthService:
         finally:
             conn.close()
     
+    def reactivate_key(self, key_id):
+        """Reactivate a previously deactivated API key"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('UPDATE api_keys SET is_active = TRUE WHERE key_id = ?', (key_id,))
+            conn.commit()
+            logger.info(f"Reactivated API key: {key_id}")
+            return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error reactivating key {key_id}: {e}")
+            return False
+        finally:
+            conn.close()
+    
     def get_usage_stats(self, key_id=None, days=7):
         """Get API usage statistics"""
         conn = self._get_connection()
@@ -325,6 +351,68 @@ class AuthService:
             return stats
         finally:
             conn.close()
+    
+    def get_endpoint_stats(self, key_id=None, days=7):
+        """Get statistics by endpoint"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            since_date = datetime.now() - timedelta(days=days)
+            
+            if key_id:
+                cursor.execute('''
+                    SELECT endpoint, method, COUNT(*) as requests
+                    FROM api_logs 
+                    WHERE key_id = ? AND timestamp >= ?
+                    GROUP BY endpoint, method
+                    ORDER BY requests DESC
+                ''', (key_id, since_date))
+            else:
+                cursor.execute('''
+                    SELECT endpoint, method, COUNT(*) as requests
+                    FROM api_logs 
+                    WHERE timestamp >= ?
+                    GROUP BY endpoint, method
+                    ORDER BY requests DESC
+                ''', (since_date,))
+            
+            stats = []
+            for row in cursor.fetchall():
+                stats.append({
+                    'endpoint': row[0],
+                    'method': row[1],
+                    'requests': row[2]
+                })
+            
+            return stats
+        finally:
+            conn.close()
+    
+    def cleanup_inactive_sessions(self, days=30):
+        """Clean up inactive device sessions older than specified days"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cutoff_date = datetime.now() - timedelta(days=days)
+            cursor.execute('''
+                DELETE FROM device_sessions 
+                WHERE is_active = FALSE AND last_activity < ?
+            ''', (cutoff_date,))
+            
+            deleted_count = cursor.rowcount
+            conn.commit()
+            
+            if deleted_count > 0:
+                logger.info(f"Cleaned up {deleted_count} inactive sessions")
+            
+            return deleted_count
+        except Exception as e:
+            logger.error(f"Error cleaning up sessions: {e}")
+            return 0
+        finally:
+            conn.close()
 
 
 def create_auth_decorators(auth_service):
@@ -341,14 +429,16 @@ def create_auth_decorators(auth_service):
             if not api_key or not device_id:
                 return jsonify({
                     'success': False,
-                    'error': 'API key and device ID are required'
+                    'error': 'API key and device ID are required',
+                    'flutter_ready': True
                 }), 401
             
             validation = auth_service.validate_request(
                 api_key=api_key,
                 device_id=device_id,
                 device_info=device_info,
-                endpoint=request.endpoint,
+                endpoint=request.endpoint or request.path,
+                method=request.method,
                 ip_address=request.remote_addr,
                 user_agent=request.headers.get('User-Agent', '')
             )
@@ -356,7 +446,8 @@ def create_auth_decorators(auth_service):
             if not validation['valid']:
                 return jsonify({
                     'success': False,
-                    'error': validation['error']
+                    'error': validation['error'],
+                    'flutter_ready': True
                 }), 401
             
             request.auth_info = validation
@@ -371,7 +462,8 @@ def create_auth_decorators(auth_service):
             if not hasattr(request, 'auth_info') or request.auth_info.get('key_type') != 'admin':
                 return jsonify({
                     'success': False,
-                    'error': 'Admin privileges required'
+                    'error': 'Admin privileges required',
+                    'flutter_ready': True
                 }), 403
             return f(*args, **kwargs)
         

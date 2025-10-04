@@ -1,4 +1,4 @@
-# app.py - SQLite-only version with simplified DatabaseService
+# app.py - Complete SQLite version with Push Notifications
 
 import os
 import logging
@@ -17,6 +17,8 @@ from auth_service import AuthService, create_auth_decorators
 from price_service import PriceService
 from scraping_service import EnhancedScrapingService
 from ipo_service import IPOService
+from push_notification_service import PushNotificationService
+from ipo_notification_checker import IPONotificationChecker
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -37,12 +39,13 @@ class DatabaseService:
         return conn
 
 class SmartScheduler:
-    """Intelligent scheduler for market-aware scraping"""
+    """Intelligent scheduler for market-aware scraping and IPO notifications"""
     
-    def __init__(self, scraping_service, price_service, db_service):
+    def __init__(self, scraping_service, price_service, db_service, notification_checker):
         self.scraping_service = scraping_service
         self.price_service = price_service
         self.db_service = db_service
+        self.notification_checker = notification_checker
         self.scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Kathmandu'))
         
         # Market configuration for Nepal (Sunday-Thursday, 11 AM - 3 PM)
@@ -246,9 +249,33 @@ class SmartScheduler:
         except Exception as e:
             logger.error(f"Scheduled scrape failed: {e}")
     
-    def start(self):
-        """Start the intelligent scheduler"""
+    def scheduled_ipo_check(self):
+        """Execute scheduled IPO notification check"""
         try:
+            logger.info("=== Scheduled IPO Notification Check Started ===")
+            
+            if not self._is_market_day():
+                logger.info("Skipping IPO check - not a market day")
+                return
+            
+            result = self.notification_checker.check_and_notify()
+            
+            if result['success']:
+                logger.info(f"IPO check completed successfully")
+                if result.get('new_ipos', 0) > 0:
+                    logger.info(f"Sent notifications for {result.get('new_ipos')} IPOs to {result.get('notified', 0)} devices")
+                else:
+                    logger.info("No new IPOs to notify")
+            else:
+                logger.error(f"IPO check failed: {result.get('error')}")
+                
+        except Exception as e:
+            logger.error(f"Scheduled IPO check failed: {e}")
+    
+    def start(self):
+        """Start the intelligent scheduler with IPO checks"""
+        try:
+            # Stock scraping job - every 15 minutes during market hours
             self.scheduler.add_job(
                 func=self.scheduled_scrape,
                 trigger=CronTrigger(
@@ -263,13 +290,33 @@ class SmartScheduler:
                 replace_existing=True
             )
             
+            # IPO notification check job - every 30 minutes during market hours
+            self.scheduler.add_job(
+                func=self.scheduled_ipo_check,
+                trigger=CronTrigger(
+                    day_of_week='sun,mon,tue,wed,thu',
+                    hour='11-14',
+                    minute='*/30',
+                    timezone=self.nepal_tz
+                ),
+                id='ipo_notification_checker',
+                name='IPO Notification Checker',
+                max_instances=1,
+                replace_existing=True
+            )
+            
             self.scheduler.start()
             logger.info("Intelligent scheduler started successfully")
-            logger.info("Schedule: Every 15 minutes during market hours (11 AM - 3 PM, Sun-Thu)")
+            logger.info("Stock scrapes: Every 15 minutes during market hours (11 AM - 3 PM, Sun-Thu)")
+            logger.info("IPO checks: Every 30 minutes during market hours (11 AM - 3 PM, Sun-Thu)")
             
-            next_run = self.scheduler.get_job('market_scraper').next_run_time
-            if next_run:
-                logger.info(f"Next scheduled scrape: {next_run.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            next_scrape = self.scheduler.get_job('market_scraper').next_run_time
+            next_ipo = self.scheduler.get_job('ipo_notification_checker').next_run_time
+            
+            if next_scrape:
+                logger.info(f"Next stock scrape: {next_scrape.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            if next_ipo:
+                logger.info(f"Next IPO check: {next_ipo.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             
         except Exception as e:
             logger.error(f"Failed to start scheduler: {e}")
@@ -286,7 +333,8 @@ class SmartScheduler:
         try:
             status = {
                 'scheduler_running': self.scheduler.running if hasattr(self, 'scheduler') else False,
-                'next_run': None,
+                'next_stock_scrape': None,
+                'next_ipo_check': None,
                 'current_nepal_time': self._get_current_nepal_time().isoformat(),
                 'market_currently_open': self._is_market_open(),
                 'today_scrape_info': self._get_today_scrape_info(),
@@ -294,9 +342,13 @@ class SmartScheduler:
             }
             
             if self.scheduler.running:
-                job = self.scheduler.get_job('market_scraper')
-                if job and job.next_run_time:
-                    status['next_run'] = job.next_run_time.isoformat()
+                stock_job = self.scheduler.get_job('market_scraper')
+                ipo_job = self.scheduler.get_job('ipo_notification_checker')
+                
+                if stock_job and stock_job.next_run_time:
+                    status['next_stock_scrape'] = stock_job.next_run_time.isoformat()
+                if ipo_job and ipo_job.next_run_time:
+                    status['next_ipo_check'] = ipo_job.next_run_time.isoformat()
             
             return status
             
@@ -305,7 +357,7 @@ class SmartScheduler:
             return {'error': str(e)}
 
 class NepalStockApp:
-    """Flutter-ready application with intelligent scheduled scraping"""
+    """Flutter-ready application with push notifications"""
     
     def __init__(self):
         # Initialize database service (SQLite only)
@@ -325,16 +377,33 @@ class NepalStockApp:
         self.ipo_service = IPOService(self.db_service)
         self.scraping_service = EnhancedScrapingService(self.price_service, self.ipo_service)
         
+        # Initialize push notification service
+        self.push_service = PushNotificationService(self.db_service)
+        logger.info(f"Push notification service initialized (FCM: {self.push_service.fcm_initialized})")
+        
+        # Initialize IPO notification checker
+        self.notification_checker = IPONotificationChecker(
+            self.ipo_service,
+            self.push_service,
+            self.db_service
+        )
+        logger.info("IPO notification checker initialized")
+        
         # Initialize intelligent scheduler
         self.smart_scheduler = SmartScheduler(
             self.scraping_service, 
             self.price_service, 
-            self.db_service
+            self.db_service,
+            self.notification_checker
         )
         
         # Create Flask app
         self.app = Flask(__name__)
         CORS(self.app)
+        
+        # Store services in app config for route access
+        self.app.config['push_service'] = self.push_service
+        self.app.config['notification_checker'] = self.notification_checker
         
         # Create authentication decorators
         self.require_auth, self.require_admin = create_auth_decorators(self.auth_service)
@@ -411,6 +480,12 @@ class NepalStockApp:
                 ipo_stats = self.ipo_service.get_statistics()
                 scheduler_status = self.smart_scheduler.get_scheduler_status()
                 
+                # Push notification status
+                push_stats = {
+                    'fcm_initialized': self.push_service.fcm_initialized,
+                    'active_devices': self.push_service.get_device_count()
+                }
+                
                 return jsonify({
                     'success': True,
                     'status': 'healthy',
@@ -424,6 +499,7 @@ class NepalStockApp:
                     'ipo_by_category': ipo_stats['by_category'],
                     'market_status': market_status,
                     'scheduler_status': scheduler_status,
+                    'push_notification_status': push_stats,
                     'last_stock_scrape': last_scrape.isoformat() if last_scrape else None,
                     'last_ipo_scrape': last_ipo_scrape.isoformat() if last_ipo_scrape else None,
                     'timestamp': datetime.now().isoformat(),
@@ -484,7 +560,7 @@ class NepalStockApp:
                     'error': str(e),
                     'flutter_ready': True
                 }), 500
-        
+
         # Stock endpoints
         @self.app.route('/api/stocks', methods=['GET'])
         @self.require_auth
@@ -523,58 +599,6 @@ class NepalStockApp:
                 })
             except Exception as e:
                 logger.error(f"Get stocks error: {e}")
-                return jsonify({
-                    'success': False,
-                    'error': str(e),
-                    'flutter_ready': True
-                }), 500
-        
-        # IPO/FPO/Rights endpoints
-        @self.app.route('/api/issues', methods=['GET'])
-        @self.require_auth
-        def get_all_issues():
-            """Get all issues"""
-            try:
-                status = request.args.get('status', 'all')
-                category = request.args.get('category')
-                limit = min(int(request.args.get('limit', 50)), 100)
-                
-                if status == 'open':
-                    data = self.ipo_service.get_open_issues(category)
-                elif status == 'coming_soon':
-                    data = self.ipo_service.get_coming_soon_issues()
-                else:
-                    all_issues = []
-                    all_issues.extend(self.ipo_service.get_all_ipos())
-                    all_issues.extend(self.ipo_service.get_all_fpos())
-                    all_issues.extend(self.ipo_service.get_all_rights_dividends())
-                    
-                    if category:
-                        category_upper = category.upper()
-                        data = [issue for issue in all_issues if issue.get('issue_category', '').upper() == category_upper]
-                    else:
-                        data = all_issues
-                    
-                    data.sort(key=lambda x: x.get('scraped_at', ''), reverse=True)
-                
-                data = data[:limit]
-                
-                return jsonify({
-                    'success': True,
-                    'data': data,
-                    'count': len(data),
-                    'filters': {
-                        'status': status,
-                        'category': category,
-                        'limit': limit
-                    },
-                    'last_ipo_scrape': self.scraping_service.get_last_ipo_scrape_time().isoformat() if self.scraping_service.get_last_ipo_scrape_time() else None,
-                    'timestamp': datetime.now().isoformat(),
-                    'flutter_ready': True
-                })
-                
-            except Exception as e:
-                logger.error(f"Get all issues error: {e}")
                 return jsonify({
                     'success': False,
                     'error': str(e),
@@ -711,6 +735,58 @@ class NepalStockApp:
             except Exception as e:
                 return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
         
+        # IPO/FPO/Rights endpoints
+        @self.app.route('/api/issues', methods=['GET'])
+        @self.require_auth
+        def get_all_issues():
+            """Get all issues"""
+            try:
+                status = request.args.get('status', 'all')
+                category = request.args.get('category')
+                limit = min(int(request.args.get('limit', 50)), 100)
+                
+                if status == 'open':
+                    data = self.ipo_service.get_open_issues(category)
+                elif status == 'coming_soon':
+                    data = self.ipo_service.get_coming_soon_issues()
+                else:
+                    all_issues = []
+                    all_issues.extend(self.ipo_service.get_all_ipos())
+                    all_issues.extend(self.ipo_service.get_all_fpos())
+                    all_issues.extend(self.ipo_service.get_all_rights_dividends())
+                    
+                    if category:
+                        category_upper = category.upper()
+                        data = [issue for issue in all_issues if issue.get('issue_category', '').upper() == category_upper]
+                    else:
+                        data = all_issues
+                    
+                    data.sort(key=lambda x: x.get('scraped_at', ''), reverse=True)
+                
+                data = data[:limit]
+                
+                return jsonify({
+                    'success': True,
+                    'data': data,
+                    'count': len(data),
+                    'filters': {
+                        'status': status,
+                        'category': category,
+                        'limit': limit
+                    },
+                    'last_ipo_scrape': self.scraping_service.get_last_ipo_scrape_time().isoformat() if self.scraping_service.get_last_ipo_scrape_time() else None,
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                })
+                
+            except Exception as e:
+                logger.error(f"Get all issues error: {e}")
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'flutter_ready': True
+                }), 500
+        
         @self.app.route('/api/issues/ipos', methods=['GET'])
         @self.require_auth
         def get_ipos_only():
@@ -841,6 +917,125 @@ class NepalStockApp:
             except Exception as e:
                 return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
         
+        # Push Notification endpoints
+        @self.app.route('/api/push-notification/register', methods=['POST'])
+        @self.require_auth
+        def register_push_device():
+            """Register device for push notifications"""
+            try:
+                data = request.get_json()
+                device_id = data.get('device_id')
+                fcm_token = data.get('fcm_token')
+                platform = data.get('platform', 'android')
+                
+                if not device_id or not fcm_token:
+                    return jsonify({
+                        'success': False,
+                        'error': 'device_id and fcm_token are required',
+                        'flutter_ready': True
+                    }), 400
+                
+                success = self.push_service.register_device(device_id, fcm_token, platform)
+                
+                if success:
+                    return jsonify({
+                        'success': True,
+                        'message': 'Device registered successfully',
+                        'device_id': device_id,
+                        'platform': platform,
+                        'flutter_ready': True
+                    }), 201
+                else:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Failed to register device',
+                        'flutter_ready': True
+                    }), 500
+                    
+            except Exception as e:
+                logger.error(f"Error registering push device: {e}")
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'flutter_ready': True
+                }), 500
+
+        @self.app.route('/api/push-notification/unregister', methods=['POST'])
+        @self.require_auth
+        def unregister_push_device():
+            """Unregister device from push notifications"""
+            try:
+                data = request.get_json()
+                device_id = data.get('device_id')
+                
+                if not device_id:
+                    return jsonify({
+                        'success': False,
+                        'error': 'device_id is required',
+                        'flutter_ready': True
+                    }), 400
+                
+                success = self.push_service.unregister_device(device_id)
+                
+                return jsonify({
+                    'success': success,
+                    'message': 'Device unregistered successfully' if success else 'Failed to unregister',
+                    'flutter_ready': True
+                })
+                
+            except Exception as e:
+                logger.error(f"Error unregistering push device: {e}")
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'flutter_ready': True
+                }), 500
+
+        @self.app.route('/api/push-notification/history', methods=['GET'])
+        @self.require_auth
+        def get_push_notification_history():
+            """Get push notification history"""
+            try:
+                limit = min(int(request.args.get('limit', 20)), 100)
+                history = self.push_service.get_notification_history(limit)
+                
+                return jsonify({
+                    'success': True,
+                    'history': history,
+                    'count': len(history),
+                    'flutter_ready': True
+                })
+                
+            except Exception as e:
+                logger.error(f"Error getting notification history: {e}")
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'flutter_ready': True
+                }), 500
+
+        @self.app.route('/api/push-notification/stats', methods=['GET'])
+        @self.require_auth
+        def get_push_notification_stats():
+            """Get push notification statistics"""
+            try:
+                stats = self.notification_checker.get_notification_stats()
+                
+                return jsonify({
+                    'success': True,
+                    'stats': stats,
+                    'flutter_ready': True
+                })
+                
+            except Exception as e:
+                logger.error(f"Error getting notification stats: {e}")
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'flutter_ready': True
+                }), 500
+        
+        # Admin endpoints
         @self.app.route('/api/trigger-scrape', methods=['POST'])
         @self.require_auth
         def trigger_scrape():
@@ -972,6 +1167,9 @@ class NepalStockApp:
                 issue_stats = self.ipo_service.get_statistics()
                 scheduler_status = self.smart_scheduler.get_scheduler_status()
                 
+                # Push notification stats
+                push_stats = self.notification_checker.get_notification_stats()
+                
                 stats = {
                     'active_keys': active_keys,
                     'total_keys': len(all_keys),
@@ -981,6 +1179,7 @@ class NepalStockApp:
                     'issue_statistics': issue_stats['summary'],
                     'issues_by_category': issue_stats['by_category'],
                     'scheduler_status': scheduler_status,
+                    'push_notification_stats': push_stats,
                     'timestamp': datetime.now().isoformat(),
                     'flutter_ready': True
                 }
@@ -1006,7 +1205,7 @@ class NepalStockApp:
                 data = request.get_json() or {}
                 action = data.get('action', '').lower()
                 
-                if action not in ['start', 'stop', 'restart', 'force_scrape']:
+                if action not in ['start', 'stop', 'restart', 'force_scrape', 'force_ipo_check']:
                     return jsonify({
                         'success': False,
                         'error': 'Invalid action',
@@ -1029,6 +1228,9 @@ class NepalStockApp:
                 elif action == 'force_scrape':
                     self.smart_scheduler.scheduled_scrape()
                     message = 'Force scrape executed'
+                elif action == 'force_ipo_check':
+                    self.smart_scheduler.scheduled_ipo_check()
+                    message = 'Force IPO check executed'
                 
                 status = self.smart_scheduler.get_scheduler_status()
                 
@@ -1041,6 +1243,28 @@ class NepalStockApp:
                     'flutter_ready': True
                 })
             except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'flutter_ready': True
+                }), 500
+        
+        @self.app.route('/api/admin/trigger-ipo-check', methods=['POST'])
+        @self.require_auth
+        @self.require_admin
+        def admin_trigger_ipo_check():
+            """Manually trigger IPO notification check (admin only)"""
+            try:
+                result = self.notification_checker.check_and_notify()
+                
+                return jsonify({
+                    'success': result['success'],
+                    'result': result,
+                    'flutter_ready': True
+                })
+                
+            except Exception as e:
+                logger.error(f"Error triggering IPO check: {e}")
                 return jsonify({
                     'success': False,
                     'error': str(e),
@@ -1067,9 +1291,10 @@ class NepalStockApp:
     
     def run(self):
         """Run the Flask application"""
-        logger.info("Starting Flutter-ready Nepal Stock API with SQLite")
+        logger.info("Starting Flutter-ready Nepal Stock API with Push Notifications")
         logger.info(f"Host: {self.flask_host}, Port: {self.flask_port}")
         logger.info(f"Database: SQLite at {self.db_service.db_path}")
+        logger.info(f"Push Notifications: {'Enabled' if self.push_service.fcm_initialized else 'Disabled (FCM not configured)'}")
         
         # Graceful shutdown handler
         import signal
