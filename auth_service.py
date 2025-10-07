@@ -82,6 +82,138 @@ class AuthService:
         conn.close()
         logger.info("Authentication tables initialized (SQLite)")
     
+    # auth_service.py - Add these FIXED methods to your AuthService class
+
+    def delete_key_permanently(self, key_id):
+        """
+        Permanently delete an API key and all associated data
+        This is the proper delete method that actually removes the key
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('PRAGMA foreign_keys = ON')
+            
+            # First check if key exists
+            cursor.execute('SELECT key_id, key_type FROM api_keys WHERE key_id = ?', (key_id,))
+            key_record = cursor.fetchone()
+            
+            if not key_record:
+                logger.warning(f"Cannot delete - key not found: {key_id}")
+                return False
+            
+            logger.info(f"Deleting key: {key_id} (type: {key_record[1]})")
+            
+            # Delete associated sessions first (due to foreign key constraint)
+            cursor.execute('DELETE FROM device_sessions WHERE key_id = ?', (key_id,))
+            deleted_sessions = cursor.rowcount
+            logger.info(f"Deleted {deleted_sessions} sessions for key {key_id}")
+            
+            # Delete the key itself
+            cursor.execute('DELETE FROM api_keys WHERE key_id = ?', (key_id,))
+            deleted_keys = cursor.rowcount
+            
+            conn.commit()
+            
+            if deleted_keys > 0:
+                logger.info(f"Successfully deleted key {key_id} and {deleted_sessions} associated sessions")
+                return True
+            else:
+                logger.error(f"Failed to delete key {key_id} - no rows affected")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error deleting key {key_id}: {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+    def deactivate_key(self, key_id):
+        """
+        Deactivate an API key (soft delete - keeps in database but inactive)
+        Use delete_key_permanently() for actual deletion
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('PRAGMA foreign_keys = ON')
+            
+            # Check if key exists first
+            cursor.execute('SELECT key_id FROM api_keys WHERE key_id = ?', (key_id,))
+            if not cursor.fetchone():
+                logger.warning(f"Cannot deactivate - key not found: {key_id}")
+                return False
+            
+            # Deactivate the key
+            cursor.execute('UPDATE api_keys SET is_active = FALSE WHERE key_id = ?', (key_id,))
+            
+            # Deactivate all sessions
+            cursor.execute('UPDATE device_sessions SET is_active = FALSE WHERE key_id = ?', (key_id,))
+            
+            conn.commit()
+            
+            logger.info(f"Deactivated key: {key_id}")
+            return cursor.rowcount > 0 or True  # Return True even if no sessions
+            
+        except Exception as e:
+            logger.error(f"Error deactivating key {key_id}: {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+    def key_exists(self, key_id):
+        """Check if a key exists in the database"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('SELECT key_id FROM api_keys WHERE key_id = ?', (key_id,))
+            result = cursor.fetchone()
+            return result is not None
+        except Exception as e:
+            logger.error(f"Error checking key existence: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def get_key_with_sessions(self, key_id):
+        """Get key info with session count"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                SELECT k.key_id, k.key_type, k.is_active,
+                    k.created_at, k.last_used,
+                    COUNT(d.id) as session_count
+                FROM api_keys k
+                LEFT JOIN device_sessions d ON k.key_id = d.key_id AND d.is_active = TRUE
+                WHERE k.key_id = ?
+                GROUP BY k.key_id
+            ''', (key_id,))
+            
+            result = cursor.fetchone()
+            if result:
+                return {
+                    'key_id': result[0],
+                    'key_type': result[1],
+                    'is_active': bool(result[2]),
+                    'created_at': result[3],
+                    'last_used': result[4],
+                    'active_sessions': result[5],
+                    'exists': True
+                }
+            return {'exists': False}
+        except Exception as e:
+            logger.error(f"Error getting key info: {e}")
+            return {'exists': False, 'error': str(e)}
+        finally:
+            conn.close()
+
     def generate_api_key(self, key_type='regular', created_by='system', description=''):
         """Generate a new API key pair"""
         api_key = secrets.token_urlsafe(32)
