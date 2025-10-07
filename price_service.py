@@ -459,7 +459,7 @@ class MarketHours:
         # Nepal timezone (UTC+5:45)
         self.nepal_tz = timezone(timedelta(hours=5, minutes=45))
         
-        # NEPSE trading hours (Sunday to Thursday, 12:00 PM to 3:00 PM)
+        # NEPSE trading hours (Sunday to Thursday, 11:00 PM to 3:00 PM)
         self.market_open_time = time(11, 0)
         self.market_close_time = time(15, 0)
         
