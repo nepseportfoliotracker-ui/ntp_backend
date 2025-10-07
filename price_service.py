@@ -460,7 +460,7 @@ class MarketHours:
         self.nepal_tz = timezone(timedelta(hours=5, minutes=45))
         
         # NEPSE trading hours (Sunday to Thursday, 12:00 PM to 3:00 PM)
-        self.market_open_time = time(12, 0)
+        self.market_open_time = time(11, 0)
         self.market_close_time = time(15, 0)
         
         # Trading days (0=Monday, 6=Sunday)
@@ -514,7 +514,7 @@ class MarketHours:
             return {
                 'status': 'pre_market',
                 'reason': 'Before market hours',
-                'opens_at': now.replace(hour=12, minute=0, second=0, microsecond=0).isoformat()
+                'opens_at': now.replace(hour=11, minute=0, second=0, microsecond=0).isoformat()
             }
         else:
             return {
@@ -530,13 +530,13 @@ class MarketHours:
         if self.is_market_open(now):
             return now
         
-        today_open = now.replace(hour=12, minute=0, second=0, microsecond=0)
+        today_open = now.replace(hour=11, minute=0, second=0, microsecond=0)
         if self.is_trading_day(now) and now.time() < self.market_open_time:
             return today_open
         
         for i in range(1, 8):
             next_day = now + timedelta(days=i)
             if self.is_trading_day(next_day):
-                return next_day.replace(hour=12, minute=0, second=0, microsecond=0)
+                return next_day.replace(hour=11, minute=0, second=0, microsecond=0)
         
         return today_open

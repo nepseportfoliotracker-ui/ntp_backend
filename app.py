@@ -355,6 +355,10 @@ class SmartScheduler:
         except Exception as e:
             logger.error(f"Error getting scheduler status: {e}")
             return {'error': str(e)}
+            
+        except Exception as e:
+            logger.error(f"Error getting scheduler status: {e}")
+            return {'error': str(e)}
 
 class NepalStockApp:
     """Flutter-ready application with push notifications"""
