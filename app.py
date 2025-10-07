@@ -281,7 +281,7 @@ class SmartScheduler:
                 trigger=CronTrigger(
                     day_of_week='sun,mon,tue,wed,thu',
                     hour='11-14',
-                    minute='*/15',
+                    minute='*/5',
                     timezone=self.nepal_tz
                 ),
                 id='market_scraper',
@@ -296,7 +296,7 @@ class SmartScheduler:
                 trigger=CronTrigger(
                     day_of_week='sun,mon,tue,wed,thu',
                     hour='11-14',
-                    minute='*/30',
+                    minute='*/60',
                     timezone=self.nepal_tz
                 ),
                 id='ipo_notification_checker',
