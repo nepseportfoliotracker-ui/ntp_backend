@@ -1144,6 +1144,72 @@ class NepalStockApp:
                     'flutter_ready': True
                 }), 500
         
+        @self.app.route('/api/admin/list-keys', methods=['GET'])
+        @self.require_auth
+        @self.require_admin
+        def admin_list_keys():
+            """List all API keys (admin only)"""
+            try:
+                logger.info(f"Admin list keys request from: {request.auth_info['key_id']}")
+                keys = self.auth_service.list_all_keys()
+                
+                logger.info(f"Found {len(keys)} keys")
+                
+                return jsonify({
+                    'success': True,
+                    'keys': keys,
+                    'count': len(keys),
+                    'timestamp': datetime.now().isoformat(),
+                    'flutter_ready': True
+                })
+            except Exception as e:
+                logger.error(f"Error listing keys: {e}")
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'flutter_ready': True
+                }), 500
+        
+        @self.app.route('/api/admin/keys/<key_id>/delete', methods=['DELETE'])
+        @self.require_auth
+        @self.require_admin
+        def admin_delete_key(key_id):
+            """Delete an API key (admin only)"""
+            try:
+                logger.info(f"Delete key request for {key_id} from: {request.auth_info['key_id']}")
+                
+                # Prevent deleting own key
+                if key_id == request.auth_info['key_id']:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Cannot delete your own key',
+                        'flutter_ready': True
+                    }), 400
+                
+                # Deactivate the key
+                success = self.auth_service.deactivate_key(key_id)
+                
+                if success:
+                    logger.info(f"Key {key_id} deleted successfully")
+                    return jsonify({
+                        'success': True,
+                        'message': f'Key {key_id} deleted successfully',
+                        'flutter_ready': True
+                    })
+                else:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Failed to delete key - key may not exist',
+                        'flutter_ready': True
+                    }), 404
+            except Exception as e:
+                logger.error(f"Error deleting key: {e}")
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'flutter_ready': True
+                }), 500
+
         @self.app.route('/api/admin/stats', methods=['GET'])
         @self.require_auth
         @self.require_admin
