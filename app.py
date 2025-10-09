@@ -206,6 +206,11 @@ class SmartScheduler:
             logger.info(f"Skipping scrape - market detected as closed today")
             return False
         
+        # Check if market is confirmed open
+        if scrape_info.get('market_confirmed_open'):
+            logger.info(f"Market confirmed open - allowing scrape")
+            return True
+        
         if scrape_info['scrape_count'] < 2:
             logger.info(f"Allowing scrape for market detection (scrape #{scrape_info['scrape_count'] + 1})")
             return True
@@ -275,7 +280,7 @@ class SmartScheduler:
     def start(self):
         """Start the intelligent scheduler with IPO checks"""
         try:
-            # Stock scraping job - every 15 minutes during market hours
+            # Stock scraping job - every 5 minutes during market hours
             self.scheduler.add_job(
                 func=self.scheduled_scrape,
                 trigger=CronTrigger(
