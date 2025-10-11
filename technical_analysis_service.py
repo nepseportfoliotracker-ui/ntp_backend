@@ -16,9 +16,10 @@ class TechnicalAnalysisService:
     def __init__(self, nepse_history_service):
         self.nepse_history_service = nepse_history_service
         self.default_window = 5  # Sensitivity for local minima/maxima detection
-        self.merge_threshold = 0.005  # 0.5% threshold for merging nearby levels
+        self.merge_threshold = 0.015  # 1.5% threshold for merging nearby levels
         self.max_clusters = 5  # Maximum number of support/resistance zones
         self.analysis_days = 100  # FIXED: Always use 100 days for S/R analysis
+        self.strength_threshold = 0.75  # Show levels with 75%+ strength
     
     def _prepare_dataframe(self, history_data):
         """Convert history data to pandas DataFrame"""
