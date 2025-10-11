@@ -1,4 +1,4 @@
-# app.py - Main Application Entry Point (Updated with NEPSE History)
+# app.py - Main Application Entry Point (Updated with Technical Analysis)
 
 import os
 import logging
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class NepalStockApp:
-    """Flutter-ready application with push notifications and NEPSE history"""
+    """Flutter-ready application with push notifications, NEPSE history, and technical analysis"""
     
     def __init__(self):
         # Initialize database service (SQLite only)
@@ -67,6 +67,10 @@ class NepalStockApp:
         self.nepse_history_service = NepseHistoryService(self.db_service)
         logger.info("NEPSE history service initialized")
         
+        # Initialize Technical Analysis Service
+        self.technical_analysis_service = TechnicalAnalysisService(self.nepse_history_service)
+        logger.info("Technical analysis service initialized")
+        
         # Initialize intelligent scheduler with NEPSE history support
         self.smart_scheduler = SmartScheduler(
             self.scraping_service, 
@@ -90,6 +94,7 @@ class NepalStockApp:
         self.app.config['notification_checker'] = self.notification_checker
         self.app.config['smart_scheduler'] = self.smart_scheduler
         self.app.config['nepse_history_service'] = self.nepse_history_service
+        self.app.config['technical_analysis_service'] = self.technical_analysis_service
         
         # Create authentication decorators
         self.require_auth, self.require_admin = create_auth_decorators(self.auth_service)
@@ -99,6 +104,7 @@ class NepalStockApp:
         # Register all routes
         register_all_routes(self.app)
         register_nepse_history_routes(self.app)
+        register_technical_analysis_routes(self.app)
         
         # Initialize data
         self._initialize_app()
@@ -163,11 +169,12 @@ class NepalStockApp:
     
     def run(self):
         """Run the Flask application"""
-        logger.info("Starting Flutter-ready Nepal Stock API with Push Notifications & NEPSE History")
+        logger.info("Starting Flutter-ready Nepal Stock API with Technical Analysis")
         logger.info(f"Host: {self.flask_host}, Port: {self.flask_port}")
         logger.info(f"Database: SQLite at {self.db_service.db_path}")
         logger.info(f"Push Notifications: {'Enabled' if self.push_service.fcm_initialized else 'Disabled (FCM not configured)'}")
         logger.info(f"NEPSE History: Enabled (weekly, monthly, yearly)")
+        logger.info(f"Technical Analysis: Enabled (S/R levels, chart data)")
         
         # Graceful shutdown handler
         def signal_handler(sig, frame):
