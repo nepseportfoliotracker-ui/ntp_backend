@@ -9,6 +9,8 @@ urllib3==2.0.7
 APScheduler==3.10.4
 pytz==2023.3
 firebase-admin==6.2.0
+pandas==2.1.4
+numpy==1.26.2
 
 # PostgreSQL support for Railway
 psycopg2-binary==2.9.7
