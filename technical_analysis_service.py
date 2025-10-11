@@ -1,4 +1,4 @@
-# technical_analysis_service.py - Updated with specific day counts
+# technical_analysis_service.py - Fixed and Complete
 
 import logging
 import numpy as np
@@ -16,10 +16,10 @@ class TechnicalAnalysisService:
     def __init__(self, nepse_history_service):
         self.nepse_history_service = nepse_history_service
         self.default_window = 5  # Sensitivity for local minima/maxima detection
-        self.merge_threshold = 0.015  # 1.5% threshold for merging nearby levels
+        self.merge_threshold = 0.005  # 0.5% threshold for merging nearby levels
         self.max_clusters = 5  # Maximum number of support/resistance zones
         self.analysis_days = 100  # FIXED: Always use 100 days for S/R analysis
-        self.strength_threshold = 0.75  # Show levels with 75%+ strength
+        self.strength_threshold = 0.70  # Show levels with 70%+ strength
     
     def _prepare_dataframe(self, history_data):
         """Convert history data to pandas DataFrame"""
@@ -67,10 +67,11 @@ class TechnicalAnalysisService:
     def _detect_local_extrema(self, prices, window=5):
         """
         Detect local minima (support) and maxima (resistance) points
+        Uses scipy.signal.argrelextrema
         
         Parameters:
         - prices: Array of price values
-        - window: Sensitivity parameter (larger = smoother)
+        - window: Sensitivity parameter (3-5 for balanced detection)
         
         Returns:
         - min_indices: Indices of local minima
@@ -79,61 +80,68 @@ class TechnicalAnalysisService:
         min_idx = argrelextrema(prices, np.less_equal, order=window)[0]
         max_idx = argrelextrema(prices, np.greater_equal, order=window)[0]
         
+        logger.info(f"Detected {len(min_idx)} support points and {len(max_idx)} resistance points")
+        
         return min_idx, max_idx
     
-    def _cluster_levels(self, levels, num_clusters=None):
+    def _count_touches(self, zone_level, prices, price_range):
         """
-        Cluster detected support/resistance levels using KMeans
+        Count how many times price touched a zone
         
         Parameters:
-        - levels: List of price levels
-        - num_clusters: Number of clusters (auto if None)
+        - zone_level: The price level of the zone
+        - prices: Array of all prices
+        - price_range: Total price range
         
         Returns:
-        - Sorted array of cluster centers
+        - Number of touches
         """
-        if len(levels) == 0:
-            return np.array([])
-        
-        levels_array = np.array(levels).reshape(-1, 1)
-        
-        if num_clusters is None:
-            num_clusters = min(self.max_clusters, len(levels))
-        
-        if num_clusters < 1:
-            return np.array([])
-        
-        try:
-            kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init='auto')
-            kmeans.fit(levels_array)
-            zones = sorted(kmeans.cluster_centers_.flatten())
-            return zones
-        except Exception as e:
-            logger.error(f"KMeans clustering failed: {e}")
-            return np.array([])
+        # Count touches within 1% of price range
+        touch_threshold = price_range * 0.01
+        touches = np.sum(np.abs(prices - zone_level) < touch_threshold)
+        return int(touches)
     
-    def _filter_nearby_zones(self, zones, threshold=0.005):
+    def _merge_nearby_levels(self, levels, price_range):
         """
-        Filter out zones that are too close to each other
+        Merge nearby support/resistance levels
         
         Parameters:
-        - zones: Array of zone values
-        - threshold: Minimum percentage difference between zones
+        - levels: List of level dictionaries with 'level' and 'touches'
+        - price_range: Total price range
         
         Returns:
-        - Filtered list of zones
+        - Merged list of levels with recalculated strength
         """
-        if len(zones) == 0:
+        if not levels:
             return []
         
-        filtered = []
-        for z in zones:
-            if not filtered:
-                filtered.append(z)
-            elif abs(z - filtered[-1]) / filtered[-1] > threshold:
-                filtered.append(z)
+        # Sort by level
+        levels.sort(key=lambda x: x['level'])
         
-        return filtered
+        merged = []
+        merge_threshold = 0.005  # 0.5%
+        
+        for level in levels:
+            if not merged:
+                # Calculate initial strength
+                level['strength'] = min(1.0, 0.65 + (level['touches'] * 0.05))
+                merged.append(level)
+            else:
+                last_level = merged[-1]['level']
+                current_level = level['level']
+                
+                # Check if levels are close enough to merge
+                if abs(current_level - last_level) / last_level <= merge_threshold:
+                    # Merge: average level and sum touches
+                    merged[-1]['level'] = (last_level + current_level) / 2
+                    merged[-1]['touches'] += level['touches']
+                    merged[-1]['strength'] = min(1.0, 0.65 + (merged[-1]['touches'] * 0.05))
+                else:
+                    # Calculate strength for new level
+                    level['strength'] = min(1.0, 0.65 + (level['touches'] * 0.05))
+                    merged.append(level)
+        
+        return merged
     
     def calculate_support_resistance(self, days=100, window=None):
         """
@@ -142,7 +150,7 @@ class TechnicalAnalysisService:
         
         Parameters:
         - days: Number of days for display (7, 30, 100, 365)
-        - window: Sensitivity for extrema detection (default: 5)
+        - window: Sensitivity for extrema detection (default: 3)
         
         Returns:
         - Dictionary with support/resistance analysis
@@ -159,69 +167,88 @@ class TechnicalAnalysisService:
             if df.empty:
                 return {'error': 'Failed to prepare data'}
             
-            # Use custom window or default
-            window = window or self.default_window
+            # Use custom window or default (3 for better detection)
+            window = window or 3
             
             # Detect local extrema
             prices = df['index_value'].values
             min_idx, max_idx = self._detect_local_extrema(prices, window)
             
-            logger.info(f"Detected {len(min_idx)} support points and {len(max_idx)} resistance points from {self.analysis_days} days")
+            # Get min/max prices for calculations
+            minPrice = float(df['index_value'].min())
+            maxPrice = float(df['index_value'].max())
+            priceRange = maxPrice - minPrice
             
-            # Extract support and resistance values
-            support_values = df.iloc[min_idx]['index_value'].tolist()
-            resistance_values = df.iloc[max_idx]['index_value'].tolist()
+            # Extract support and resistance values with their indices
+            support_points = [
+                {
+                    'level': float(df.iloc[i]['index_value']),
+                    'touches': self._count_touches(df.iloc[i]['index_value'], prices, priceRange),
+                    'strength': 0.0  # Will be recalculated
+                }
+                for i in min_idx
+            ]
             
-            # Cluster the levels
-            all_levels = support_values + resistance_values
-            clustered_zones = self._cluster_levels(all_levels)
+            resistance_points = [
+                {
+                    'level': float(df.iloc[i]['index_value']),
+                    'touches': self._count_touches(df.iloc[i]['index_value'], prices, priceRange),
+                    'strength': 0.0  # Will be recalculated
+                }
+                for i in max_idx
+            ]
             
-            # Filter nearby zones
-            filtered_zones = self._filter_nearby_zones(clustered_zones, self.merge_threshold)
+            # Merge nearby levels
+            support_points = self._merge_nearby_levels(support_points, priceRange)
+            resistance_points = self._merge_nearby_levels(resistance_points, priceRange)
+            
+            logger.info(f"After merging: {len(support_points)} support zones, {len(resistance_points)} resistance zones")
             
             # Get latest price
-            latest_price = df['index_value'].iloc[-1]
+            latest_price = float(df['index_value'].iloc[-1])
             latest_date = df.index[-1].strftime('%Y-%m-%d')
             
-            # Classify zones as support or resistance
-            supports = [float(z) for z in filtered_zones if z < latest_price]
-            resistances = [float(z) for z in filtered_zones if z > latest_price]
-            
-            # Calculate strength based on touches
+            # Classify zones as support or resistance based on current price
             support_levels = []
-            for s in supports:
-                # Count how many times price came close to this level
-                touches = sum(1 for price in prices if abs(price - s) / s < 0.01)
-                strength = min(1.0, 0.7 + (touches * 0.05))
-                
-                support_levels.append({
-                    'level': s,
-                    'strength': strength,
-                    'touches': touches,
-                    'distance': latest_price - s,
-                    'distance_percent': ((latest_price - s) / latest_price) * 100
-                })
-            
             resistance_levels = []
-            for r in resistances:
-                touches = sum(1 for price in prices if abs(price - r) / r < 0.01)
-                strength = min(1.0, 0.7 + (touches * 0.05))
-                
-                resistance_levels.append({
-                    'level': r,
-                    'strength': strength,
-                    'touches': touches,
-                    'distance': r - latest_price,
-                    'distance_percent': ((r - latest_price) / latest_price) * 100
-                })
             
-            # Sort by strength descending
+            for point in support_points:
+                if point['level'] < latest_price:
+                    support_levels.append({
+                        'level': point['level'],
+                        'strength': point['strength'],
+                        'touches': point['touches'],
+                        'distance': latest_price - point['level'],
+                        'distance_percent': ((latest_price - point['level']) / latest_price) * 100
+                    })
+            
+            for point in resistance_points:
+                if point['level'] > latest_price:
+                    resistance_levels.append({
+                        'level': point['level'],
+                        'strength': point['strength'],
+                        'touches': point['touches'],
+                        'distance': point['level'] - latest_price,
+                        'distance_percent': ((point['level'] - latest_price) / latest_price) * 100
+                    })
+            
+            logger.info(f"Classified: {len(support_levels)} supports below price, {len(resistance_levels)} resistances above price")
+            
+            # Filter to only show strong levels
+            support_levels = [s for s in support_levels if s['strength'] >= self.strength_threshold]
+            resistance_levels = [r for r in resistance_levels if r['strength'] >= self.strength_threshold]
+            
+            logger.info(f"After filtering (>={self.strength_threshold*100}%): {len(support_levels)} supports, {len(resistance_levels)} resistances")
+            
+            # Sort by strength descending and limit to top 5 each
             support_levels.sort(key=lambda x: x['strength'], reverse=True)
             resistance_levels.sort(key=lambda x: x['strength'], reverse=True)
             
-            # Filter to only show strong levels (strength >= 0.85)
-            support_levels = [s for s in support_levels if s['strength'] >= 0.85]
-            resistance_levels = [r for r in resistance_levels if r['strength'] >= 0.85]
+            support_levels = support_levels[:5]  # Top 5 supports
+            resistance_levels = resistance_levels[:5]  # Top 5 resistances
+            
+            # Get all zones for reference
+            all_zones = [s['level'] for s in support_levels] + [r['level'] for r in resistance_levels]
             
             # Prepare result
             result = {
@@ -229,7 +256,7 @@ class TechnicalAnalysisService:
                 'display_days': days,
                 'analysis_date': datetime.now().isoformat(),
                 'data_points': len(df),
-                'current_price': float(latest_price),
+                'current_price': latest_price,
                 'latest_date': latest_date,
                 'window_size': window,
                 'detected_points': {
@@ -237,16 +264,16 @@ class TechnicalAnalysisService:
                     'resistance': len(max_idx),
                     'total': len(min_idx) + len(max_idx)
                 },
-                'clustered_zones': len(filtered_zones),
+                'clustered_zones': len(all_zones),
                 'support_levels': support_levels,
                 'resistance_levels': resistance_levels,
                 'nearest_support': support_levels[0] if support_levels else None,
                 'nearest_resistance': resistance_levels[0] if resistance_levels else None,
-                'all_zones': [float(z) for z in filtered_zones],
+                'all_zones': all_zones,
                 'price_range': {
-                    'min': float(df['index_value'].min()),
-                    'max': float(df['index_value'].max()),
-                    'range': float(df['index_value'].max() - df['index_value'].min())
+                    'min': minPrice,
+                    'max': maxPrice,
+                    'range': priceRange
                 }
             }
             
