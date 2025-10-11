@@ -90,7 +90,7 @@ def register_stock_routes(app):
             }), 500
     
     @app.route('/api/stocks/search', methods=['GET'])
-    @app.config['require_auth']
+    @require_auth
     def search_stocks():
         """Search stocks"""
         try:
@@ -122,7 +122,7 @@ def register_stock_routes(app):
             }), 500
     
     @app.route('/api/stocks/gainers', methods=['GET'])
-    @app.config['require_auth']
+    @require_auth
     def get_top_gainers():
         """Get top gaining stocks"""
         try:
@@ -142,7 +142,7 @@ def register_stock_routes(app):
             return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
     
     @app.route('/api/stocks/losers', methods=['GET'])
-    @app.config['require_auth']
+    @require_auth
     def get_top_losers():
         """Get top losing stocks"""
         try:
@@ -162,7 +162,7 @@ def register_stock_routes(app):
             return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
     
     @app.route('/api/stocks/active', methods=['GET'])
-    @app.config['require_auth']
+    @require_auth
     def get_most_active():
         """Get most actively traded stocks"""
         try:
@@ -182,7 +182,7 @@ def register_stock_routes(app):
             return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
     
     @app.route('/api/market-summary', methods=['GET'])
-    @app.config['require_auth']
+    @require_auth
     def get_market_summary():
         """Get market summary statistics"""
         try:

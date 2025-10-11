@@ -10,8 +10,11 @@ logger = logging.getLogger(__name__)
 def register_issue_routes(app):
     """Register issue-related routes (IPO/FPO/Rights)"""
     
+    # Get decorators from app config
+    require_auth = app.config['require_auth']
+    
     @app.route('/api/issues', methods=['GET'])
-    @app.config['require_auth']
+    @require_auth
     def get_all_issues():
         """Get all issues"""
         try:
@@ -67,7 +70,7 @@ def register_issue_routes(app):
             }), 500
     
     @app.route('/api/issues/ipos', methods=['GET'])
-    @app.config['require_auth']
+    @require_auth
     def get_ipos_only():
         """Get IPOs only"""
         try:
@@ -85,7 +88,7 @@ def register_issue_routes(app):
             return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
     
     @app.route('/api/issues/fpos', methods=['GET'])
-    @app.config['require_auth']
+    @require_auth
     def get_fpos_only():
         """Get FPOs only"""
         try:
@@ -103,7 +106,7 @@ def register_issue_routes(app):
             return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
     
     @app.route('/api/issues/rights', methods=['GET'])
-    @app.config['require_auth']
+    @require_auth
     def get_rights_only():
         """Get Rights/Dividends only"""
         try:
@@ -121,7 +124,7 @@ def register_issue_routes(app):
             return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
     
     @app.route('/api/issues/open', methods=['GET'])
-    @app.config['require_auth']
+    @require_auth
     def get_open_issues():
         """Get currently open issues"""
         try:
@@ -142,7 +145,7 @@ def register_issue_routes(app):
             return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
     
     @app.route('/api/issues/coming-soon', methods=['GET'])
-    @app.config['require_auth']
+    @require_auth
     def get_coming_soon_issues():
         """Get coming soon issues"""
         try:
@@ -160,7 +163,7 @@ def register_issue_routes(app):
             return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
     
     @app.route('/api/issues/search', methods=['GET'])
-    @app.config['require_auth']
+    @require_auth
     def search_issues():
         """Search all issues"""
         try:
@@ -188,7 +191,7 @@ def register_issue_routes(app):
             return jsonify({'success': False, 'error': str(e), 'flutter_ready': True}), 500
     
     @app.route('/api/issues/statistics', methods=['GET'])
-    @app.config['require_auth']
+    @require_auth
     def get_issue_statistics():
         """Get detailed statistics"""
         try:
