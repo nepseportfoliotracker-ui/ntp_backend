@@ -17,11 +17,13 @@ from scraping_service import EnhancedScrapingService
 from push_notification_service import PushNotificationService
 from ipo_notification_checker import IPONotificationChecker
 from nepse_history_service import NepseHistoryService
+from technical_analysis_service import TechnicalAnalysisService
 
 # Import modular components
 from scheduler import SmartScheduler
 from routes import register_all_routes
 from routes_nepse_history import register_nepse_history_routes
+from routes_technical_analysis import register_technical_analysis_routes
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
