@@ -1,4 +1,4 @@
-# scheduler.py - Smart Scheduler for Market-Aware Scraping
+# scheduler.py - Smart Scheduler with NEPSE History Support
 
 import logging
 import hashlib
@@ -12,13 +12,14 @@ logger = logging.getLogger(__name__)
 
 
 class SmartScheduler:
-    """Intelligent scheduler for market-aware scraping and IPO notifications"""
+    """Intelligent scheduler for market-aware scraping, IPO notifications, and NEPSE history"""
     
-    def __init__(self, scraping_service, price_service, db_service, notification_checker):
+    def __init__(self, scraping_service, price_service, db_service, notification_checker, nepse_history_service):
         self.scraping_service = scraping_service
         self.price_service = price_service
         self.db_service = db_service
         self.notification_checker = notification_checker
+        self.nepse_history_service = nepse_history_service
         self.scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Kathmandu'))
         
         # Market configuration for Nepal (Sunday-Thursday, 11 AM - 3 PM)
@@ -179,7 +180,6 @@ class SmartScheduler:
             logger.info(f"Skipping scrape - market detected as closed today")
             return False
         
-        # Check if market is confirmed open
         if scrape_info.get('market_confirmed_open'):
             logger.info(f"Market confirmed open - allowing scrape")
             return True
@@ -250,8 +250,29 @@ class SmartScheduler:
         except Exception as e:
             logger.error(f"Scheduled IPO check failed: {e}")
     
+    def scheduled_nepse_history_scrape(self):
+        """Execute scheduled NEPSE history scraping"""
+        try:
+            logger.info("=== Scheduled NEPSE History Scrape Started ===")
+            
+            if not self._is_market_day():
+                logger.info("Skipping NEPSE history scrape - not a market day")
+                return
+            
+            # Scrape all periods (weekly, monthly, yearly)
+            results = self.nepse_history_service.scrape_all_periods(force=False)
+            
+            logger.info(f"NEPSE history scrape completed: {results}")
+            
+            # Clean old data
+            self.nepse_history_service.clean_old_data()
+            logger.info("Old NEPSE history data cleaned")
+            
+        except Exception as e:
+            logger.error(f"Scheduled NEPSE history scrape failed: {e}")
+    
     def start(self):
-        """Start the intelligent scheduler with IPO checks"""
+        """Start the intelligent scheduler with all jobs"""
         try:
             # Stock scraping job - every 5 minutes during market hours
             self.scheduler.add_job(
@@ -283,18 +304,37 @@ class SmartScheduler:
                 replace_existing=True
             )
             
+            # NEPSE history scraping job - once daily at 4 PM (after market close) on market days
+            self.scheduler.add_job(
+                func=self.scheduled_nepse_history_scrape,
+                trigger=CronTrigger(
+                    day_of_week='sun,mon,tue,wed,thu',  # Sunday to Thursday (market days)
+                    hour='16',  # 4:00 PM Nepal Time
+                    minute='0',
+                    timezone=self.nepal_tz
+                ),
+                id='nepse_history_scraper',
+                name='NEPSE History Scraper (4 PM on Market Days)',
+                max_instances=1,
+                replace_existing=True
+            )
+            
             self.scheduler.start()
             logger.info("Intelligent scheduler started successfully")
             logger.info("Stock scrapes: Every 5 minutes during market hours (11 AM - 3 PM, Sun-Thu)")
             logger.info("IPO checks: Every 30 minutes during market hours (11 AM - 3 PM, Sun-Thu)")
+            logger.info("NEPSE history: Daily at 4:00 PM (Sun-Thu)")
             
             next_scrape = self.scheduler.get_job('market_scraper').next_run_time
             next_ipo = self.scheduler.get_job('ipo_notification_checker').next_run_time
+            next_history = self.scheduler.get_job('nepse_history_scraper').next_run_time
             
             if next_scrape:
                 logger.info(f"Next stock scrape: {next_scrape.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             if next_ipo:
                 logger.info(f"Next IPO check: {next_ipo.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            if next_history:
+                logger.info(f"Next NEPSE history scrape: {next_history.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             
         except Exception as e:
             logger.error(f"Failed to start scheduler: {e}")
@@ -313,6 +353,7 @@ class SmartScheduler:
                 'scheduler_running': self.scheduler.running if hasattr(self, 'scheduler') else False,
                 'next_stock_scrape': None,
                 'next_ipo_check': None,
+                'next_nepse_history_scrape': None,
                 'current_nepal_time': self._get_current_nepal_time().isoformat(),
                 'market_currently_open': self._is_market_open(),
                 'today_scrape_info': self._get_today_scrape_info(),
@@ -322,11 +363,14 @@ class SmartScheduler:
             if self.scheduler.running:
                 stock_job = self.scheduler.get_job('market_scraper')
                 ipo_job = self.scheduler.get_job('ipo_notification_checker')
+                history_job = self.scheduler.get_job('nepse_history_scraper')
                 
                 if stock_job and stock_job.next_run_time:
                     status['next_stock_scrape'] = stock_job.next_run_time.isoformat()
                 if ipo_job and ipo_job.next_run_time:
                     status['next_ipo_check'] = ipo_job.next_run_time.isoformat()
+                if history_job and history_job.next_run_time:
+                    status['next_nepse_history_scrape'] = history_job.next_run_time.isoformat()
             
             return status
             
