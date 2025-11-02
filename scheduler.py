@@ -1,4 +1,4 @@
-# scheduler.py - Smart Scheduler with NEPSE History Support
+# scheduler.py - Smart Scheduler with NEPSE History and IPO Scraping Support
 
 import logging
 import hashlib
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class SmartScheduler:
-    """Intelligent scheduler for market-aware scraping, IPO notifications, and NEPSE history"""
+    """Intelligent scheduler for market-aware scraping, IPO notifications, NEPSE history, and IPO scraping"""
     
     def __init__(self, scraping_service, price_service, db_service, notification_checker, nepse_history_service):
         self.scraping_service = scraping_service
@@ -227,6 +227,27 @@ class SmartScheduler:
         except Exception as e:
             logger.error(f"Scheduled scrape failed: {e}")
     
+    def scheduled_ipo_scrape(self):
+        """Execute scheduled IPO/FPO/Rights data scrape - once daily at 11:10 AM"""
+        try:
+            logger.info("=== Scheduled Daily IPO/FPO/Rights Scrape Started (11:10 AM) ===")
+            
+            if not self._is_market_day():
+                logger.info("Skipping IPO scrape - not a market day")
+                return
+            
+            logger.info("Performing daily IPO/FPO/Rights data scrape...")
+            count = self.scraping_service.scrape_ipo_sources(force=False)
+            
+            if count > 0:
+                logger.info(f"Daily IPO scrape completed successfully: {count} issues processed")
+                logger.info(f"  - Saved to separate tables: ipos, fpos, rights_dividends")
+            else:
+                logger.warning("Daily IPO scrape returned no data")
+        
+        except Exception as e:
+            logger.error(f"Scheduled IPO scrape failed: {e}")
+    
     def scheduled_ipo_check(self):
         """Execute scheduled IPO notification check"""
         try:
@@ -274,7 +295,7 @@ class SmartScheduler:
     def start(self):
         """Start the intelligent scheduler with all jobs"""
         try:
-            # Stock scraping job - every 5 minutes during market hours
+            # Job 1: Stock scraping - every 5 minutes during market hours
             self.scheduler.add_job(
                 func=self.scheduled_scrape,
                 trigger=CronTrigger(
@@ -289,7 +310,22 @@ class SmartScheduler:
                 replace_existing=True
             )
             
-            # IPO notification check job - every 30 minutes during market hours
+            # Job 2: IPO/FPO/Rights scraping - once daily at 11:10 AM
+            self.scheduler.add_job(
+                func=self.scheduled_ipo_scrape,
+                trigger=CronTrigger(
+                    day_of_week='sun,mon,tue,wed,thu',
+                    hour='11',
+                    minute='10',
+                    timezone=self.nepal_tz
+                ),
+                id='ipo_scraper',
+                name='Daily IPO/FPO/Rights Scraper',
+                max_instances=1,
+                replace_existing=True
+            )
+            
+            # Job 3: IPO notification check - every 30 minutes during market hours
             self.scheduler.add_job(
                 func=self.scheduled_ipo_check,
                 trigger=CronTrigger(
@@ -304,12 +340,12 @@ class SmartScheduler:
                 replace_existing=True
             )
             
-            # NEPSE history scraping job - once daily at 4 PM (after market close) on market days
+            # Job 4: NEPSE history scraping - once daily at 4 PM (after market close)
             self.scheduler.add_job(
                 func=self.scheduled_nepse_history_scrape,
                 trigger=CronTrigger(
-                    day_of_week='sun,mon,tue,wed,thu',  # Sunday to Thursday (market days)
-                    hour='16',  # 4:00 PM Nepal Time
+                    day_of_week='sun,mon,tue,wed,thu',
+                    hour='16',
                     minute='0',
                     timezone=self.nepal_tz
                 ),
@@ -322,15 +358,19 @@ class SmartScheduler:
             self.scheduler.start()
             logger.info("Intelligent scheduler started successfully")
             logger.info("Stock scrapes: Every 5 minutes during market hours (11 AM - 3 PM, Sun-Thu)")
+            logger.info("IPO scrapes: Once daily at 11:10 AM on market days (Sun-Thu)")
             logger.info("IPO checks: Every 30 minutes during market hours (11 AM - 3 PM, Sun-Thu)")
             logger.info("NEPSE history: Daily at 4:00 PM (Sun-Thu)")
             
             next_scrape = self.scheduler.get_job('market_scraper').next_run_time
+            next_ipo_scrape = self.scheduler.get_job('ipo_scraper').next_run_time
             next_ipo = self.scheduler.get_job('ipo_notification_checker').next_run_time
             next_history = self.scheduler.get_job('nepse_history_scraper').next_run_time
             
             if next_scrape:
                 logger.info(f"Next stock scrape: {next_scrape.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            if next_ipo_scrape:
+                logger.info(f"Next IPO scrape: {next_ipo_scrape.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             if next_ipo:
                 logger.info(f"Next IPO check: {next_ipo.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             if next_history:
@@ -352,6 +392,7 @@ class SmartScheduler:
             status = {
                 'scheduler_running': self.scheduler.running if hasattr(self, 'scheduler') else False,
                 'next_stock_scrape': None,
+                'next_ipo_scrape': None,
                 'next_ipo_check': None,
                 'next_nepse_history_scrape': None,
                 'current_nepal_time': self._get_current_nepal_time().isoformat(),
@@ -362,11 +403,14 @@ class SmartScheduler:
             
             if self.scheduler.running:
                 stock_job = self.scheduler.get_job('market_scraper')
+                ipo_scrape_job = self.scheduler.get_job('ipo_scraper')
                 ipo_job = self.scheduler.get_job('ipo_notification_checker')
                 history_job = self.scheduler.get_job('nepse_history_scraper')
                 
                 if stock_job and stock_job.next_run_time:
                     status['next_stock_scrape'] = stock_job.next_run_time.isoformat()
+                if ipo_scrape_job and ipo_scrape_job.next_run_time:
+                    status['next_ipo_scrape'] = ipo_scrape_job.next_run_time.isoformat()
                 if ipo_job and ipo_job.next_run_time:
                     status['next_ipo_check'] = ipo_job.next_run_time.isoformat()
                 if history_job and history_job.next_run_time:
