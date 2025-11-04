@@ -1,4 +1,4 @@
-# technical_analysis_service.py - Fixed and Complete
+# technical_analysis_service.py - Modified for 175 days
 
 import logging
 import numpy as np
@@ -18,7 +18,7 @@ class TechnicalAnalysisService:
         self.default_window = 5  # Sensitivity for local minima/maxima detection
         self.merge_threshold = 0.005  # 0.5% threshold for merging nearby levels
         self.max_clusters = 5  # Maximum number of support/resistance zones
-        self.analysis_days = 100  # FIXED: Always use 100 days for S/R analysis
+        self.analysis_days = 175  # MODIFIED: Use 175 days for S/R analysis
         self.strength_threshold = 0.70  # Show levels with 70%+ strength
     
     def _prepare_dataframe(self, history_data):
@@ -39,7 +39,7 @@ class TechnicalAnalysisService:
         Get NEPSE history data for specific number of days
         
         Parameters:
-        - days: Number of days (7, 30, 100, 365)
+        - days: Number of days (7, 30, 175, 365)
         
         Returns:
         - List of history data points
@@ -143,20 +143,20 @@ class TechnicalAnalysisService:
         
         return merged
     
-    def calculate_support_resistance(self, days=100, window=None):
+    def calculate_support_resistance(self, days=175, window=None):
         """
         Calculate support and resistance levels for given number of days
-        IMPORTANT: S/R analysis always uses 100 days data regardless of display period
+        IMPORTANT: S/R analysis always uses 175 days data regardless of display period
         
         Parameters:
-        - days: Number of days for display (7, 30, 100, 365)
+        - days: Number of days for display (7, 30, 175, 365)
         - window: Sensitivity for extrema detection (default: 3)
         
         Returns:
         - Dictionary with support/resistance analysis
         """
         try:
-            # ALWAYS use 100 days for S/R calculation
+            # ALWAYS use 175 days for S/R calculation
             analysis_data = self._get_data_by_days(self.analysis_days)
             
             if not analysis_data:
@@ -288,12 +288,12 @@ class TechnicalAnalysisService:
             traceback.print_exc()
             return {'error': str(e)}
     
-    def get_detailed_analysis(self, days=100, window=None):
+    def get_detailed_analysis(self, days=175, window=None):
         """
         Get detailed support/resistance analysis with additional insights
         
         Parameters:
-        - days: Display period (7, 30, 100, 365)
+        - days: Display period (7, 30, 175, 365)
         - window: Detection sensitivity
         
         Returns:
@@ -332,13 +332,13 @@ class TechnicalAnalysisService:
         
         return analysis
     
-    def get_line_chart_data(self, days=100):
+    def get_line_chart_data(self, days=175):
         """
         Get simple line chart data (only index values with dates)
         Note: OHLC data not available, so candlestick charts cannot be created
         
         Parameters:
-        - days: Number of days (7, 30, 100, 365)
+        - days: Number of days (7, 30, 175, 365)
         
         Returns:
         - List of price data points for line chart
