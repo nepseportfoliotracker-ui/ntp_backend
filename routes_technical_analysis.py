@@ -1,5 +1,4 @@
-# routes_technical_analysis.py - FIXED VERSION
-# Fixes: RuntimeError: Working outside of application context
+# routes_technical_analysis.py - Updated for 175 days
 
 import logging
 from datetime import datetime
@@ -8,7 +7,7 @@ from flask import jsonify, request
 logger = logging.getLogger(__name__)
 
 # Valid day options
-VALID_DAYS = [7, 30, 100, 365]
+VALID_DAYS = [7, 30, 175, 365]  # Changed 100 to 175
 
 
 def register_technical_analysis_routes(app):
@@ -22,11 +21,11 @@ def register_technical_analysis_routes(app):
     def get_complete_chart_data():
         """
         Get complete data for charting (history + support/resistance)
-        Query params: days (7/30/100/365), window (optional)
+        Query params: days (7/30/175/365), window (optional)
         Uses line chart data instead of candlestick (no OHLC available)
         """
         try:
-            days = request.args.get('days', default=100, type=int)
+            days = request.args.get('days', default=175, type=int)  # Changed default from 100 to 175
             window = request.args.get('window', type=int)
             
             if days not in VALID_DAYS:
@@ -36,7 +35,7 @@ def register_technical_analysis_routes(app):
                     'flutter_ready': True
                 }), 400
             
-            # Get S/R analysis (always uses 100 days for S/R)
+            # Get S/R analysis (always uses 175 days for S/R)
             analysis = technical_service.get_detailed_analysis(days, window)
             
             if 'error' in analysis:
@@ -63,12 +62,12 @@ def register_technical_analysis_routes(app):
                 'success': True,
                 'days': days,
                 'analysis': analysis,
-                'candlestick_data': candlestick_data,  # Actually line data, keeping name for compatibility
+                'candlestick_data': candlestick_data,
                 'support_levels': analysis.get('support_levels', []),
                 'resistance_levels': analysis.get('resistance_levels', []),
                 'current_price': analysis.get('current_price'),
                 'insights': analysis.get('insights', []),
-                'note': 'Support/Resistance levels calculated from 100 days data. Chart shows line data (no OHLC available).',
+                'note': 'Support/Resistance levels calculated from 175 days data. Chart shows line data (no OHLC available).',  # Changed from 100
                 'timestamp': datetime.now().isoformat(),
                 'flutter_ready': True
             })
@@ -88,11 +87,11 @@ def register_technical_analysis_routes(app):
     def get_support_resistance():
         """
         Get support and resistance levels
-        Query params: days (7/30/100/365), window (optional)
-        Note: S/R analysis always uses 100 days data
+        Query params: days (7/30/175/365), window (optional)
+        Note: S/R analysis always uses 175 days data
         """
         try:
-            days = request.args.get('days', default=100, type=int)
+            days = request.args.get('days', default=175, type=int)  # Changed from 100
             window = request.args.get('window', type=int)
             
             if days not in VALID_DAYS:
@@ -114,7 +113,7 @@ def register_technical_analysis_routes(app):
             return jsonify({
                 'success': True,
                 'analysis': analysis,
-                'note': 'Support/Resistance calculated using 100 days data',
+                'note': 'Support/Resistance calculated using 175 days data',  # Changed from 100
                 'timestamp': datetime.now().isoformat(),
                 'flutter_ready': True
             })
@@ -132,10 +131,10 @@ def register_technical_analysis_routes(app):
     def get_detailed_analysis():
         """
         Get detailed technical analysis with insights
-        Query params: days (7/30/100/365), window (optional)
+        Query params: days (7/30/175/365), window (optional)
         """
         try:
-            days = request.args.get('days', default=100, type=int)
+            days = request.args.get('days', default=175, type=int)  # Changed from 100
             window = request.args.get('window', type=int)
             
             if days not in VALID_DAYS:
@@ -196,7 +195,7 @@ def register_technical_analysis_routes(app):
             return jsonify({
                 'success': True,
                 'summary': summary,
-                'note': 'All S/R levels calculated from 100 days data',
+                'note': 'All S/R levels calculated from 175 days data',  # Changed from 100
                 'available_periods': VALID_DAYS,
                 'timestamp': datetime.now().isoformat(),
                 'flutter_ready': True
@@ -210,4 +209,4 @@ def register_technical_analysis_routes(app):
                 'flutter_ready': True
             }), 500
     
-    logger.info("✅ Technical analysis routes registered successfully with line chart data support")
+    logger.info("✅ Technical analysis routes registered successfully with 175-day analysis")
