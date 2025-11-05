@@ -330,8 +330,8 @@ class SmartScheduler:
                 func=self.scheduled_ipo_notification,
                 trigger=CronTrigger(
                     day_of_week='sun,mon,tue,wed,thu',
-                    hour='17',
-                    minute='52',
+                    hour='18',
+                    minute='9',
                     timezone=self.nepal_tz
                 ),
                 id='ipo_notification',
