@@ -1,4 +1,4 @@
-# ipo_notification_checker.py - Backend IPO notification checker (Daily at 5:52 PM)
+# ipo_notification_checker.py - Backend IPO notification checker (Daily at 6:02 PM)
 
 import logging
 from datetime import datetime, date
@@ -6,7 +6,7 @@ from datetime import datetime, date
 logger = logging.getLogger(__name__)
 
 class IPONotificationChecker:
-    """Check for ordinary share IPOs and send push notifications daily at 5:52 PM"""
+    """Check for ordinary share IPOs and send push notifications daily at 6:02 PM"""
     
     def __init__(self, ipo_service, push_notification_service, db_service):
         self.ipo_service = ipo_service
@@ -105,10 +105,10 @@ class IPONotificationChecker:
     def check_and_notify(self):
         """
         Check for open ordinary share IPOs and send notifications.
-        This runs daily at 5:52 PM, sending notifications for all open IPOs.
+        This runs daily at 6:02 PM, sending notifications for all open IPOs.
         """
         try:
-            logger.info("=== IPO Notification Check Started (5:52 PM) ===")
+            logger.info("=== IPO Notification Check Started (6:02 PM) ===")
             
             # Get all open IPOs
             open_ipos = self.ipo_service.get_open_issues('IPO')
