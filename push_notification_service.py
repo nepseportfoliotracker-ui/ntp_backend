@@ -1,4 +1,4 @@
-# push_notification_service.py - FCM Push Notification Service
+# push_notification_service.py - FCM Push Notification Service (FIXED)
 
 import logging
 import json
@@ -205,18 +205,18 @@ class PushNotificationService:
                 logger.info("No active device tokens to send notifications")
                 return {'success': True, 'sent': 0, 'message': 'No active devices'}
             
-            # Build notification
+            # Build notification - ALL VALUES MUST BE STRINGS
             if is_single:
                 title = f"IPO Open: {ipo_data['company_name']}"
                 body = self._build_notification_body(ipo_data)
                 data = {
                     'type': 'ipo_open',
-                    'company_name': ipo_data['company_name'],
-                    'symbol': ipo_data.get('symbol', ''),
-                    'share_type': ipo_data.get('share_type', 'Ordinary'),
+                    'company_name': str(ipo_data.get('company_name', '')),
+                    'symbol': str(ipo_data.get('symbol', '')),
+                    'share_type': str(ipo_data.get('share_type', 'Ordinary')),
                     'price': str(ipo_data.get('price', 0)),
-                    'open_date': ipo_data.get('open_date', ''),
-                    'close_date': ipo_data.get('close_date', '')
+                    'open_date': str(ipo_data.get('open_date', '')),
+                    'close_date': str(ipo_data.get('close_date', ''))
                 }
             else:
                 count = len(ipo_data)
