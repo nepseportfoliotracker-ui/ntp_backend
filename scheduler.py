@@ -248,28 +248,28 @@ class SmartScheduler:
         except Exception as e:
             logger.error(f"Scheduled IPO scrape failed: {e}")
     
-    def scheduled_ipo_check(self):
-        """Execute scheduled IPO notification check"""
+    def scheduled_ipo_notification(self):
+        """Execute scheduled IPO notification at 4:55 PM - send push notifications for open IPOs"""
         try:
-            logger.info("=== Scheduled IPO Notification Check Started ===")
+            logger.info("=== Scheduled IPO Notification (4:55 PM) ===")
             
             if not self._is_market_day():
-                logger.info("Skipping IPO check - not a market day")
+                logger.info("Skipping IPO notification - not a market day")
                 return
             
             result = self.notification_checker.check_and_notify()
             
             if result['success']:
-                logger.info(f"IPO check completed successfully")
+                logger.info(f"IPO notification completed successfully")
                 if result.get('new_ipos', 0) > 0:
                     logger.info(f"Sent notifications for {result.get('new_ipos')} IPOs to {result.get('notified', 0)} devices")
                 else:
                     logger.info("No new IPOs to notify")
             else:
-                logger.error(f"IPO check failed: {result.get('error')}")
+                logger.error(f"IPO notification failed: {result.get('error')}")
                 
         except Exception as e:
-            logger.error(f"Scheduled IPO check failed: {e}")
+            logger.error(f"Scheduled IPO notification failed: {e}")
     
     def scheduled_nepse_history_scrape(self):
         """Execute scheduled NEPSE history scraping"""
@@ -325,17 +325,17 @@ class SmartScheduler:
                 replace_existing=True
             )
             
-            # Job 3: IPO notification check - every 30 minutes during market hours
+            # Job 3: IPO notification - once daily at 5:00 PM (send push notifications)
             self.scheduler.add_job(
-                func=self.scheduled_ipo_check,
+                func=self.scheduled_ipo_notification,
                 trigger=CronTrigger(
                     day_of_week='sun,mon,tue,wed,thu',
-                    hour='11-14',
-                    minute='*/30',
+                    hour='17',
+                    minute='0',
                     timezone=self.nepal_tz
                 ),
-                id='ipo_notification_checker',
-                name='IPO Notification Checker',
+                id='ipo_notification',
+                name='Daily IPO Notification (5:00 PM)',
                 max_instances=1,
                 replace_existing=True
             )
@@ -359,20 +359,20 @@ class SmartScheduler:
             logger.info("Intelligent scheduler started successfully")
             logger.info("Stock scrapes: Every 5 minutes during market hours (11 AM - 3 PM, Sun-Thu)")
             logger.info("IPO scrapes: Once daily at 11:10 AM on market days (Sun-Thu)")
-            logger.info("IPO checks: Every 30 minutes during market hours (11 AM - 3 PM, Sun-Thu)")
+            logger.info("IPO notifications: Once daily at 4:55 PM on market days (Sun-Thu)")
             logger.info("NEPSE history: Daily at 4:00 PM (Sun-Thu)")
             
             next_scrape = self.scheduler.get_job('market_scraper').next_run_time
             next_ipo_scrape = self.scheduler.get_job('ipo_scraper').next_run_time
-            next_ipo = self.scheduler.get_job('ipo_notification_checker').next_run_time
+            next_ipo_notif = self.scheduler.get_job('ipo_notification').next_run_time
             next_history = self.scheduler.get_job('nepse_history_scraper').next_run_time
             
             if next_scrape:
                 logger.info(f"Next stock scrape: {next_scrape.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             if next_ipo_scrape:
                 logger.info(f"Next IPO scrape: {next_ipo_scrape.strftime('%Y-%m-%d %H:%M:%S %Z')}")
-            if next_ipo:
-                logger.info(f"Next IPO check: {next_ipo.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            if next_ipo_notif:
+                logger.info(f"Next IPO notification: {next_ipo_notif.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             if next_history:
                 logger.info(f"Next NEPSE history scrape: {next_history.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             
@@ -393,7 +393,7 @@ class SmartScheduler:
                 'scheduler_running': self.scheduler.running if hasattr(self, 'scheduler') else False,
                 'next_stock_scrape': None,
                 'next_ipo_scrape': None,
-                'next_ipo_check': None,
+                'next_ipo_notification': None,
                 'next_nepse_history_scrape': None,
                 'current_nepal_time': self._get_current_nepal_time().isoformat(),
                 'market_currently_open': self._is_market_open(),
@@ -404,15 +404,15 @@ class SmartScheduler:
             if self.scheduler.running:
                 stock_job = self.scheduler.get_job('market_scraper')
                 ipo_scrape_job = self.scheduler.get_job('ipo_scraper')
-                ipo_job = self.scheduler.get_job('ipo_notification_checker')
+                ipo_notif_job = self.scheduler.get_job('ipo_notification')
                 history_job = self.scheduler.get_job('nepse_history_scraper')
                 
                 if stock_job and stock_job.next_run_time:
                     status['next_stock_scrape'] = stock_job.next_run_time.isoformat()
                 if ipo_scrape_job and ipo_scrape_job.next_run_time:
                     status['next_ipo_scrape'] = ipo_scrape_job.next_run_time.isoformat()
-                if ipo_job and ipo_job.next_run_time:
-                    status['next_ipo_check'] = ipo_job.next_run_time.isoformat()
+                if ipo_notif_job and ipo_notif_job.next_run_time:
+                    status['next_ipo_notification'] = ipo_notif_job.next_run_time.isoformat()
                 if history_job and history_job.next_run_time:
                     status['next_nepse_history_scrape'] = history_job.next_run_time.isoformat()
             

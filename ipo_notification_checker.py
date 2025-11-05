@@ -1,4 +1,4 @@
-# ipo_notification_checker.py - Backend IPO notification checker
+# ipo_notification_checker.py - Backend IPO notification checker (Daily at 5:00 PM)
 
 import logging
 from datetime import datetime, date
@@ -6,7 +6,7 @@ from datetime import datetime, date
 logger = logging.getLogger(__name__)
 
 class IPONotificationChecker:
-    """Check for ordinary share IPOs and send push notifications"""
+    """Check for ordinary share IPOs and send push notifications daily at 5:00 PM"""
     
     def __init__(self, ipo_service, push_notification_service, db_service):
         self.ipo_service = ipo_service
@@ -15,23 +15,25 @@ class IPONotificationChecker:
         self._create_tracking_table()
     
     def _create_tracking_table(self):
-        """Create table to track notified IPOs"""
+        """Create table to track notification history"""
         try:
             conn = self.db_service.get_connection()
             cursor = conn.cursor()
             
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ipo_notification_tracking (
+                CREATE TABLE IF NOT EXISTS ipo_notification_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    company_name TEXT NOT NULL,
                     notification_date DATE NOT NULL,
-                    notified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(company_name, notification_date)
+                    notification_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    ipo_count INTEGER DEFAULT 0,
+                    company_names TEXT,
+                    devices_notified INTEGER DEFAULT 0,
+                    success INTEGER DEFAULT 1
                 )
             ''')
             
             conn.commit()
-            logger.info("IPO notification tracking table created")
+            logger.info("IPO notification history table created")
             
         except Exception as e:
             logger.error(f"Error creating tracking table: {e}")
@@ -49,33 +51,34 @@ class IPONotificationChecker:
         share_type = issue['share_type'].lower().strip()
         return any(keyword in share_type for keyword in ['ordinary', 'common', 'ord'])
     
-    def has_been_notified_today(self, company_name):
-        """Check if company has been notified today"""
+    def record_notification(self, ipo_count, company_names, devices_notified, success):
+        """Record notification history"""
         try:
             conn = self.db_service.get_connection()
             cursor = conn.cursor()
             
             today = date.today().isoformat()
+            companies_str = ', '.join(company_names) if company_names else ''
             
             cursor.execute('''
-                SELECT COUNT(*) FROM ipo_notification_tracking
-                WHERE company_name = ? AND notification_date = ?
-            ''', (company_name, today))
+                INSERT INTO ipo_notification_history
+                (notification_date, ipo_count, company_names, devices_notified, success)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (today, ipo_count, companies_str, devices_notified, int(success)))
             
-            result = cursor.fetchone()
-            return result[0] > 0 if result else False
+            conn.commit()
+            logger.info(f"Recorded notification: {ipo_count} IPOs, {devices_notified} devices")
             
         except Exception as e:
-            logger.error(f"Error checking notification status: {e}")
-            return False
+            logger.error(f"Error recording notification: {e}")
         finally:
             try:
                 conn.close()
             except:
                 pass
     
-    def mark_as_notified(self, company_name):
-        """Mark company as notified today"""
+    def get_today_notification_count(self):
+        """Get count of notifications sent today"""
         try:
             conn = self.db_service.get_connection()
             cursor = conn.cursor()
@@ -83,16 +86,16 @@ class IPONotificationChecker:
             today = date.today().isoformat()
             
             cursor.execute('''
-                INSERT OR IGNORE INTO ipo_notification_tracking
-                (company_name, notification_date)
-                VALUES (?, ?)
-            ''', (company_name, today))
+                SELECT COUNT(*) FROM ipo_notification_history
+                WHERE notification_date = ?
+            ''', (today,))
             
-            conn.commit()
-            logger.info(f"Marked {company_name} as notified for {today}")
+            result = cursor.fetchone()
+            return result[0] if result else 0
             
         except Exception as e:
-            logger.error(f"Error marking as notified: {e}")
+            logger.error(f"Error getting today's notification count: {e}")
+            return 0
         finally:
             try:
                 conn.close()
@@ -100,77 +103,74 @@ class IPONotificationChecker:
                 pass
     
     def check_and_notify(self):
-        """Check for open ordinary share IPOs and send notifications"""
+        """
+        Check for open ordinary share IPOs and send notifications.
+        This runs daily at 5:00 PM, sending notifications for all open IPOs.
+        """
         try:
-            logger.info("=== IPO Notification Check Started ===")
+            logger.info("=== IPO Notification Check Started (5:00 PM) ===")
             
             # Get all open IPOs
             open_ipos = self.ipo_service.get_open_issues('IPO')
             
             if not open_ipos:
                 logger.info("No open IPOs found")
+                self.record_notification(0, [], 0, True)
                 return {
                     'success': True,
                     'checked': 0,
                     'ordinary_ipos': 0,
-                    'notified': 0
+                    'notified': 0,
+                    'message': 'No open IPOs'
                 }
             
             logger.info(f"Found {len(open_ipos)} open IPOs")
             
-            # Filter for ordinary shares
+            # Filter for ordinary shares only
             ordinary_ipos = [ipo for ipo in open_ipos if self.is_ordinary_share(ipo)]
             
             if not ordinary_ipos:
                 logger.info("No ordinary share IPOs found")
+                self.record_notification(0, [], 0, True)
                 return {
                     'success': True,
                     'checked': len(open_ipos),
                     'ordinary_ipos': 0,
-                    'notified': 0
+                    'notified': 0,
+                    'message': 'No ordinary share IPOs'
                 }
             
             logger.info(f"Found {len(ordinary_ipos)} ordinary share IPOs")
+            logger.info(f"Companies: {[ipo['company_name'] for ipo in ordinary_ipos]}")
             
-            # Filter out already notified IPOs
-            new_ipos = [
-                ipo for ipo in ordinary_ipos 
-                if not self.has_been_notified_today(ipo['company_name'])
-            ]
-            
-            if not new_ipos:
-                logger.info("All ordinary share IPOs already notified today")
-                return {
-                    'success': True,
-                    'checked': len(open_ipos),
-                    'ordinary_ipos': len(ordinary_ipos),
-                    'notified': 0,
-                    'message': 'All IPOs already notified today'
-                }
-            
-            logger.info(f"Sending notifications for {len(new_ipos)} new ordinary share IPOs")
-            
-            # Send notifications
-            if len(new_ipos) == 1:
-                result = self.push_service.send_ipo_notification(new_ipos[0], is_single=True)
+            # Send notifications (always send, regardless of previous notifications)
+            if len(ordinary_ipos) == 1:
+                result = self.push_service.send_ipo_notification(ordinary_ipos[0], is_single=True)
             else:
-                result = self.push_service.send_ipo_notification(new_ipos, is_single=False)
+                result = self.push_service.send_ipo_notification(ordinary_ipos, is_single=False)
             
-            # Mark as notified
+            # Record notification
+            company_names = [ipo['company_name'] for ipo in ordinary_ipos]
+            devices_notified = result.get('success_count', 0)
+            
+            self.record_notification(
+                len(ordinary_ipos),
+                company_names,
+                devices_notified,
+                result.get('success', False)
+            )
+            
             if result.get('success'):
-                for ipo in new_ipos:
-                    self.mark_as_notified(ipo['company_name'])
-                
-                logger.info(f"Successfully sent notifications for {len(new_ipos)} IPOs")
+                logger.info(f"Successfully sent notifications for {len(ordinary_ipos)} IPOs to {devices_notified} devices")
                 
                 return {
                     'success': True,
                     'checked': len(open_ipos),
                     'ordinary_ipos': len(ordinary_ipos),
-                    'new_ipos': len(new_ipos),
-                    'notified': result.get('success_count', 0),
+                    'notified': devices_notified,
                     'failed': result.get('failure_count', 0),
-                    'companies': [ipo['company_name'] for ipo in new_ipos]
+                    'companies': company_names,
+                    'message': f'Sent notifications for {len(ordinary_ipos)} IPOs'
                 }
             else:
                 logger.error(f"Failed to send notifications: {result.get('error')}")
@@ -183,6 +183,8 @@ class IPONotificationChecker:
             
         except Exception as e:
             logger.error(f"Error in IPO notification check: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {
                 'success': False,
                 'error': str(e)
@@ -196,24 +198,49 @@ class IPONotificationChecker:
             
             today = date.today().isoformat()
             
-            # Count today's notifications
+            # Get today's notification info
             cursor.execute('''
-                SELECT COUNT(*) FROM ipo_notification_tracking
+                SELECT ipo_count, company_names, devices_notified, notification_time
+                FROM ipo_notification_history
                 WHERE notification_date = ?
+                ORDER BY notification_time DESC
+                LIMIT 1
             ''', (today,))
             
-            today_count = cursor.fetchone()[0] if cursor.fetchone() else 0
+            today_row = cursor.fetchone()
+            today_info = None
+            if today_row:
+                today_info = {
+                    'ipo_count': today_row[0],
+                    'companies': today_row[1],
+                    'devices_notified': today_row[2],
+                    'time': today_row[3]
+                }
             
             # Get active device count
             device_count = self.push_service.get_device_count()
             
-            # Get recent notification history
-            history = self.push_service.get_notification_history(limit=10)
+            # Get recent notification history (last 10 days)
+            cursor.execute('''
+                SELECT notification_date, ipo_count, company_names, devices_notified
+                FROM ipo_notification_history
+                ORDER BY notification_date DESC, notification_time DESC
+                LIMIT 10
+            ''')
+            
+            history = []
+            for row in cursor.fetchall():
+                history.append({
+                    'date': row[0],
+                    'ipo_count': row[1],
+                    'companies': row[2],
+                    'devices_notified': row[3]
+                })
             
             return {
-                'notified_today': today_count,
+                'today_notification': today_info,
                 'active_devices': device_count,
-                'recent_notifications': history,
+                'recent_history': history,
                 'fcm_initialized': self.push_service.fcm_initialized,
                 'last_check': datetime.now().isoformat()
             }
