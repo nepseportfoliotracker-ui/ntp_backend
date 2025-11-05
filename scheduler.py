@@ -249,9 +249,9 @@ class SmartScheduler:
             logger.error(f"Scheduled IPO scrape failed: {e}")
     
     def scheduled_ipo_notification(self):
-        """Execute scheduled IPO notification at 4:55 PM - send push notifications for open IPOs"""
+        """Execute scheduled IPO notification at 5:08 PM - send push notifications for open IPOs"""
         try:
-            logger.info("=== Scheduled IPO Notification (4:55 PM) ===")
+            logger.info("=== Scheduled IPO Notification (5:08 PM) ===")
             
             if not self._is_market_day():
                 logger.info("Skipping IPO notification - not a market day")
@@ -325,17 +325,17 @@ class SmartScheduler:
                 replace_existing=True
             )
             
-            # Job 3: IPO notification - once daily at 5:00 PM (send push notifications)
+            # Job 3: IPO notification - once daily at 5:08 PM (send push notifications)
             self.scheduler.add_job(
                 func=self.scheduled_ipo_notification,
                 trigger=CronTrigger(
                     day_of_week='sun,mon,tue,wed,thu',
                     hour='17',
-                    minute='0',
+                    minute='8',
                     timezone=self.nepal_tz
                 ),
                 id='ipo_notification',
-                name='Daily IPO Notification (5:00 PM)',
+                name='Daily IPO Notification (5:08 PM)',
                 max_instances=1,
                 replace_existing=True
             )
@@ -359,7 +359,7 @@ class SmartScheduler:
             logger.info("Intelligent scheduler started successfully")
             logger.info("Stock scrapes: Every 5 minutes during market hours (11 AM - 3 PM, Sun-Thu)")
             logger.info("IPO scrapes: Once daily at 11:10 AM on market days (Sun-Thu)")
-            logger.info("IPO notifications: Once daily at 4:55 PM on market days (Sun-Thu)")
+            logger.info("IPO notifications: Once daily at 5:08 PM on market days (Sun-Thu)")
             logger.info("NEPSE history: Daily at 4:00 PM (Sun-Thu)")
             
             next_scrape = self.scheduler.get_job('market_scraper').next_run_time
