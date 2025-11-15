@@ -116,7 +116,6 @@ class NepalStockApp:
         self._initialize_app()
     
     def _initialize_app(self):
-        """Initialize application with default data"""
         logger.info("Initializing Nepal Stock API with split database...")
         
         # Show database info
