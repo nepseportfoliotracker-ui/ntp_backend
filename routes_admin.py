@@ -1,5 +1,6 @@
-# routes_admin.py - Admin Routes
+# routes_admin.py - Admin Routes with Volume Diagnostic
 
+import os
 import logging
 from datetime import datetime
 from flask import jsonify, request
@@ -165,8 +166,8 @@ def register_admin_routes(app):
                     'flutter_ready': True
                 }), 400
             
-            # Deactivate the key
-            success = auth_service.deactivate_key(key_id)
+            # Use permanent delete instead of deactivate
+            success = auth_service.delete_key_permanently(key_id)
             
             if success:
                 logger.info(f"Key {key_id} deleted successfully")
@@ -212,7 +213,7 @@ def register_admin_routes(app):
             
             active_sessions = 0
             try:
-                conn = services['db_service'].get_connection()
+                conn = services['db_service'].get_auth_connection()
                 cursor = conn.cursor()
                 cursor.execute('SELECT COUNT(*) FROM device_sessions WHERE is_active = 1')
                 result = cursor.fetchone()
@@ -330,6 +331,80 @@ def register_admin_routes(app):
                 'error': str(e),
                 'flutter_ready': True
             }), 500
+    
+    # ===== VOLUME DIAGNOSTIC ENDPOINT (NO AUTH REQUIRED) =====
+    @app.route('/api/admin/volume-diagnostic', methods=['GET'])
+    def volume_diagnostic():
+        """Diagnostic endpoint to check volume status (no auth for debugging)"""
+        
+        volume_path = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH')
+        db_service = app.config['db_service']
+        
+        diagnostic = {
+            'environment': {
+                'RAILWAY_VOLUME_MOUNT_PATH': volume_path,
+                'AUTH_DATABASE_PATH': os.environ.get('AUTH_DATABASE_PATH'),
+                'DATA_DATABASE_PATH': os.environ.get('DATA_DATABASE_PATH'),
+            },
+            'volume': {
+                'configured': volume_path is not None,
+                'path': volume_path,
+                'exists': os.path.exists(volume_path) if volume_path else False,
+                'writable': False,
+                'contents': []
+            },
+            'databases': {
+                'auth': {
+                    'path': db_service.auth_db_path,
+                    'exists': os.path.exists(db_service.auth_db_path),
+                    'size_bytes': os.path.getsize(db_service.auth_db_path) if os.path.exists(db_service.auth_db_path) else 0,
+                },
+                'data': {
+                    'path': db_service.data_db_path,
+                    'exists': os.path.exists(db_service.data_db_path),
+                    'size_bytes': os.path.getsize(db_service.data_db_path) if os.path.exists(db_service.data_db_path) else 0,
+                }
+            },
+            'keys_in_auth_db': 0,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Check if volume is writable
+        if volume_path and os.path.exists(volume_path):
+            try:
+                test_file = os.path.join(volume_path, '.write_test')
+                with open(test_file, 'w') as f:
+                    f.write('test')
+                os.remove(test_file)
+                diagnostic['volume']['writable'] = True
+            except Exception as e:
+                diagnostic['volume']['write_error'] = str(e)
+            
+            # List volume contents
+            try:
+                diagnostic['volume']['contents'] = os.listdir(volume_path)
+            except Exception as e:
+                diagnostic['volume']['list_error'] = str(e)
+        
+        # Count keys in auth database
+        try:
+            auth_service = app.config['auth_service']
+            keys = auth_service.list_all_keys()
+            diagnostic['keys_in_auth_db'] = len(keys)
+            diagnostic['keys_details'] = [{
+                'key_id': k['key_id'],
+                'key_type': k['key_type'],
+                'created_at': k['created_at'],
+                'is_active': k['is_active']
+            } for k in keys]
+        except Exception as e:
+            diagnostic['db_query_error'] = str(e)
+        
+        return jsonify({
+            'success': True,
+            'diagnostic': diagnostic,
+            'flutter_ready': True
+        })
 
 
 def register_error_handlers(app):
