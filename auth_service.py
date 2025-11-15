@@ -20,7 +20,7 @@ class AuthService:
     
     def _get_connection(self):
         """Get database connection"""
-        return self.db_service.get_connection()
+        return self.db_service.get_auth_connection()
     
     def _init_auth_tables(self):
         """Initialize authentication-related database tables"""
