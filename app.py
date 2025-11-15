@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 
 class NepalStockApp:
-    """Flutter-ready application with split database architecture"""
     
     def __init__(self):
         # Initialize database service with split databases
@@ -130,8 +129,7 @@ class NepalStockApp:
             logger.info(f"    Persistent: {info.get('persistent', False)}")
             logger.info(f"    Size: {info.get('size_mb', 0)} MB")
         logger.info("=" * 60)
-        
-        # Check for admin keys
+        # Check for admin keys yes 
         self._ensure_admin_key()
         
         # Run initial data scrape
