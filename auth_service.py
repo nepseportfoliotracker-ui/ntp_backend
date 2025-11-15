@@ -9,7 +9,6 @@ from functools import wraps
 from flask import request, jsonify
 
 logger = logging.getLogger(__name__)
-
 class AuthService:
     """Handle all authentication, authorization and security operations"""
     
