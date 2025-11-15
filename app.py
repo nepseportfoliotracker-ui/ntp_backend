@@ -1,4 +1,4 @@
-# app.py - Main Application Entry Point (Updated with Technical Analysis)
+# app.py - Updated for split database configuration
 
 import os
 import logging
@@ -31,12 +31,19 @@ logger = logging.getLogger(__name__)
 
 
 class NepalStockApp:
-    """Flutter-ready application with push notifications, NEPSE history, and technical analysis"""
+    """Flutter-ready application with split database architecture"""
     
     def __init__(self):
-        # Initialize database service (SQLite only)
-        db_path = os.environ.get('DATABASE_PATH', 'nepal_stock.db')
-        self.db_service = DatabaseService(db_path)
+        # Initialize database service with split databases
+        # Data DB: ephemeral (stocks, IPOs, prices, history)
+        # Auth DB: persistent (API keys, sessions, logs)
+        data_db_path = os.environ.get('DATA_DATABASE_PATH', 'nepal_stock_data.db')
+        auth_db_path = os.environ.get('AUTH_DATABASE_PATH')  # Will use volume if available
+        
+        self.db_service = DatabaseService(
+            data_db_path=data_db_path,
+            auth_db_path=auth_db_path
+        )
         
         # Configuration
         self.flask_host = os.environ.get('FLASK_HOST', '0.0.0.0')
@@ -44,7 +51,7 @@ class NepalStockApp:
         self.flask_debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
         
         # Initialize services
-        logger.info("Initializing services for SQLite...")
+        logger.info("Initializing services with split database...")
         
         self.auth_service = AuthService(self.db_service)
         self.price_service = PriceService(self.db_service)
@@ -71,7 +78,7 @@ class NepalStockApp:
         self.technical_analysis_service = TechnicalAnalysisService(self.nepse_history_service)
         logger.info("Technical analysis service initialized")
         
-        # Initialize intelligent scheduler with NEPSE history support
+        # Initialize intelligent scheduler
         self.smart_scheduler = SmartScheduler(
             self.scraping_service, 
             self.price_service, 
@@ -84,7 +91,7 @@ class NepalStockApp:
         self.app = Flask(__name__)
         CORS(self.app)
         
-        # Store services in app config for route access
+        # Store services in app config
         self.app.config['db_service'] = self.db_service
         self.app.config['auth_service'] = self.auth_service
         self.app.config['price_service'] = self.price_service
@@ -111,8 +118,18 @@ class NepalStockApp:
     
     def _initialize_app(self):
         """Initialize application with default data"""
-        logger.info("Initializing Flutter-ready Nepal Stock API with SQLite...")
-        logger.info(f"SQLite database path: {self.db_service.db_path}")
+        logger.info("Initializing Nepal Stock API with split database...")
+        
+        # Show database info
+        db_info = self.db_service.get_database_info()
+        logger.info("=" * 60)
+        logger.info("DATABASE CONFIGURATION:")
+        for db_name, info in db_info.get('databases', {}).items():
+            logger.info(f"  {db_name.upper()}: {info.get('description', '')}")
+            logger.info(f"    Path: {info.get('path', 'N/A')}")
+            logger.info(f"    Persistent: {info.get('persistent', False)}")
+            logger.info(f"    Size: {info.get('size_mb', 0)} MB")
+        logger.info("=" * 60)
         
         # Check for admin keys
         self._ensure_admin_key()
@@ -140,9 +157,9 @@ class NepalStockApp:
             logger.error(f"Failed to start intelligent scheduler: {e}")
     
     def _ensure_admin_key(self):
-        """Ensure at least one admin key exists"""
+        """Ensure at least one admin key exists in auth database"""
         try:
-            conn = self.db_service.get_connection()
+            conn = self.db_service.get_auth_connection()
             cursor = conn.cursor()
             cursor.execute('SELECT COUNT(*) FROM api_keys WHERE key_type = "admin" AND is_active = TRUE')
             admin_count = cursor.fetchone()[0]
@@ -157,24 +174,25 @@ class NepalStockApp:
             initial_admin = self.auth_service.generate_api_key(
                 key_type='admin',
                 created_by='system',
-                description='Initial SQLite admin key'
+                description='Initial admin key (persistent auth DB)'
             )
             if initial_admin:
                 logger.info("=" * 60)
-                logger.info("ADMIN KEY CREATED (SQLite):")
+                logger.info("ADMIN KEY CREATED (PERSISTENT AUTH DATABASE):")
                 logger.info(f"Key ID: {initial_admin['key_id']}")
                 logger.info(f"API Key: {initial_admin['api_key']}")
                 logger.info("SAVE THIS KEY SECURELY - IT WON'T BE SHOWN AGAIN!")
+                logger.info("This key will persist across deployments.")
                 logger.info("=" * 60)
+        else:
+            logger.info(f"Found {admin_count} active admin key(s) in persistent auth database")
     
     def run(self):
         """Run the Flask application"""
-        logger.info("Starting Flutter-ready Nepal Stock API with Technical Analysis")
+        logger.info("Starting Nepal Stock API with Split Database Architecture")
         logger.info(f"Host: {self.flask_host}, Port: {self.flask_port}")
-        logger.info(f"Database: SQLite at {self.db_service.db_path}")
-        logger.info(f"Push Notifications: {'Enabled' if self.push_service.fcm_initialized else 'Disabled (FCM not configured)'}")
-        logger.info(f"NEPSE History: Enabled (weekly, monthly, yearly)")
-        logger.info(f"Technical Analysis: Enabled (S/R levels, chart data)")
+        logger.info(f"Auth Database: Persistent (survives deployments)")
+        logger.info(f"Data Database: Ephemeral (fresh data on each deployment)")
         
         # Graceful shutdown handler
         def signal_handler(sig, frame):
