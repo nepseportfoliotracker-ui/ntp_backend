@@ -58,7 +58,13 @@ class DatabaseService:
     
     def get_auth_connection(self):
         """Convenience method to get auth database connection"""
-        return self.get_connection('auth')
+        conn = sqlite3.connect(self.auth_db_path)
+        conn.execute('PRAGMA foreign_keys = ON')
+        # Disable WAL mode to ensure immediate writes to main file
+        conn.execute('PRAGMA journal_mode = DELETE')
+        # Enable synchronous mode for data safety
+        conn.execute('PRAGMA synchronous = FULL')
+        return conn
     
     def get_data_connection(self):
         """Convenience method to get data database connection"""
