@@ -1,4 +1,4 @@
-# app.py - Updated for split database configuration
+# app.py - Updated for split database configuration with IndexService
 
 import os
 import logging
@@ -14,6 +14,7 @@ from auth_service import AuthService, create_auth_decorators
 from price_service import PriceService
 from ipo_service import IPOService
 from scraping_service import EnhancedScrapingService
+from index_service import IndexService
 from push_notification_service import PushNotificationService
 from ipo_notification_checker import IPONotificationChecker
 from nepse_history_service import NepseHistoryService
@@ -55,7 +56,18 @@ class NepalStockApp:
         self.auth_service = AuthService(self.db_service)
         self.price_service = PriceService(self.db_service)
         self.ipo_service = IPOService(self.db_service)
-        self.scraping_service = EnhancedScrapingService(self.price_service, self.ipo_service)
+        
+        # Initialize Index Service
+        self.index_service = IndexService(self.db_service)
+        logger.info("Index service initialized - market_indices table created")
+        
+        # Initialize scraping service with index support (removed db_service parameter)
+        self.scraping_service = EnhancedScrapingService(
+            self.price_service, 
+            self.ipo_service,
+            index_service=self.index_service
+        )
+        logger.info("Scraping service initialized with stock, IPO, and index support")
         
         # Initialize push notification service
         self.push_service = PushNotificationService(self.db_service)
@@ -95,6 +107,7 @@ class NepalStockApp:
         self.app.config['auth_service'] = self.auth_service
         self.app.config['price_service'] = self.price_service
         self.app.config['ipo_service'] = self.ipo_service
+        self.app.config['index_service'] = self.index_service  # Add index service to config
         self.app.config['scraping_service'] = self.scraping_service
         self.app.config['push_service'] = self.push_service
         self.app.config['notification_checker'] = self.notification_checker
@@ -128,14 +141,18 @@ class NepalStockApp:
             logger.info(f"    Persistent: {info.get('persistent', False)}")
             logger.info(f"    Size: {info.get('size_mb', 0)} MB")
         logger.info("=" * 60)
-        # Check for admin keys yes 
+        
+        # Check for admin keys
         self._ensure_admin_key()
         
-        # Run initial data scrape
-        logger.info("Running initial stock and IPO data scrape...")
+        # Run initial data scrape (stocks, IPOs, and indices)
+        logger.info("Running initial stock, IPO, and market indices data scrape...")
         try:
             initial_counts = self.scraping_service.scrape_all_data(force=True)
-            logger.info(f"Application initialized with {initial_counts['stocks']} stocks and {initial_counts['ipos']} IPOs/FPOs/Rights")
+            logger.info(f"Application initialized:")
+            logger.info(f"  - Stocks: {initial_counts['stocks']}")
+            logger.info(f"  - Market Indices: {initial_counts['indices']}")
+            logger.info(f"  - IPOs/FPOs/Rights: {initial_counts['ipos']}")
         except Exception as e:
             logger.warning(f"Initial scrape failed: {e}")
         

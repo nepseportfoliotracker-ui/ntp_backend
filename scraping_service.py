@@ -1,4 +1,4 @@
-# scraping_service.py - Complete cleaned version with working sources only
+# scraping_service.py - Enhanced version with market indices support
 
 import requests
 from bs4 import BeautifulSoup
@@ -17,16 +17,18 @@ from contextlib import contextmanager
 logger = logging.getLogger(__name__)
 
 class EnhancedScrapingService:
-    """Enhanced scraping service with only working sources"""
+    """Enhanced scraping service with stock, IPO, and market indices support"""
     
-    def __init__(self, price_service, ipo_service):
+    def __init__(self, price_service, ipo_service, index_service=None):
         self.price_service = price_service
         self.ipo_service = ipo_service
+        self.index_service = index_service
         self.last_scrape_time = None
         self.last_ipo_scrape_time = None
+        self.last_index_scrape_time = None
         self.scrape_lock = threading.Lock()
         
-        # Stock data sources - CLEANED UP: Only working source
+        # Stock data sources
         self.stock_sources = [
             {
                 'name': 'ShareSansar Live Page',
@@ -35,7 +37,16 @@ class EnhancedScrapingService:
             }
         ]
         
-        # IPO/FPO/Rights sources - These are working well
+        # Index data sources
+        self.index_sources = [
+            {
+                'name': 'ShareSansar Live Page',
+                'url': 'https://www.sharesansar.com/live-trading',
+                'parser': self._parse_sharesansar_indices
+            }
+        ]
+        
+        # IPO/FPO/Rights sources
         self.ipo_sources = [
             {
                 'name': 'Nepali Paisa IPO API',
@@ -112,6 +123,150 @@ class EnhancedScrapingService:
         
         return session
     
+    # ==================== INDEX SCRAPING METHODS ====================
+    
+    def scrape_market_indices(self, force=False):
+        """Scrape market indices from ShareSansar"""
+        if not self.index_service:
+            logger.warning("Index service not configured, skipping index scraping")
+            return 0
+        
+        with self.scrape_lock:
+            logger.info("Starting market indices scraping...")
+            
+            for source in self.index_sources:
+                try:
+                    logger.info(f"Scraping indices from: {source['name']}")
+                    indices = self._scrape_source_for_indices(source)
+                    
+                    if indices and len(indices) >= 5:
+                        count = self.index_service.save_indices(indices, source['name'])
+                        if count > 0:
+                            self.last_index_scrape_time = datetime.now()
+                            logger.info(f"Successfully scraped {count} market indices")
+                            return count
+                    else:
+                        logger.warning(f"Insufficient index data from {source['name']}: {len(indices) if indices else 0} indices")
+                
+                except Exception as e:
+                    logger.error(f"Error scraping indices from {source['name']}: {e}")
+                    continue
+            
+            logger.warning("All index scraping sources failed")
+            return 0
+    
+    def _scrape_source_for_indices(self, source):
+        """Scrape data from a single source for indices"""
+        data = []
+        
+        headers = self.session.headers.copy()
+        if 'headers' in source:
+            headers.update(source['headers'])
+        
+        for verify_ssl in [True, False]:
+            try:
+                response = self.session.get(
+                    source['url'], 
+                    headers=headers,
+                    timeout=30,
+                    verify=verify_ssl
+                )
+                
+                response.raise_for_status()
+                
+                if response.status_code == 200:
+                    data = source['parser'](response, source['url'])
+                    if data:
+                        return data
+                
+                break
+                
+            except requests.exceptions.SSLError:
+                if verify_ssl:
+                    logger.warning(f"SSL error for {source['url']}, trying without verification")
+                    continue
+                else:
+                    logger.error(f"SSL error even without verification for {source['url']}")
+                    break
+            except Exception as e:
+                logger.warning(f"Error with {source['url']} (SSL verify: {verify_ssl}): {e}")
+                if not verify_ssl:
+                    break
+        
+        return data
+    
+    def _parse_sharesansar_indices(self, response, url):
+        """Parse ShareSansar market indices from live trading page"""
+        soup = BeautifulSoup(response.content, 'html.parser')
+        indices_data = []
+        
+        try:
+            # The indices appear before the stock table in a specific section
+            # Look for the index data (usually in a table or list format)
+            
+            # Method 1: Find all text patterns that match index format
+            page_text = soup.get_text()
+            
+            # Known indices to look for
+            index_patterns = {
+                'NEPSE Index': r'NEPSE\s+Index\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([-+]?\d+\.?\d*)%?',
+                'Banking SubIndex': r'Banking\s+SubIndex\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([-+]?\d+\.?\d*)%?',
+                'Development Bank': r'Development\s+Bank\s+\w*\.?\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([-+]?\d+\.?\d*)%?',
+                'Finance Index': r'Finance\s+Index\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([-+]?\d+\.?\d*)%?',
+                'Hotels And Tourism': r'Hotels\s+And\s+Tourism\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([-+]?\d+\.?\d*)%?',
+                'HydroPower Index': r'HydroPower\s+Index\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([-+]?\d+\.?\d*)%?',
+                'Investment': r'Investment\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([-+]?\d+\.?\d*)%?',
+                'Life Insurance': r'Life\s+Insurance\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([-+]?\d+\.?\d*)%?',
+                'Manufacturing And Pr.': r'Manufacturing\s+And\s+Pr\.\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([-+]?\d+\.?\d*)%?',
+                'Microfinance Index': r'Microfinance\s+Index\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([-+]?\d+\.?\d*)%?',
+                'Non Life Insurance': r'Non\s+Life\s+Insurance\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([-+]?\d+\.?\d*)%?',
+                'Others Index': r'Others\s+Index\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([-+]?\d+\.?\d*)%?',
+                'Float Index': r'Float\s+Index\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([-+]?\d+\.?\d*)%?',
+                'Sensitive Index': r'Sensitive\s+Index\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([-+]?\d+\.?\d*)%?',
+                'Sensitive Float': r'Sensitive\s+Float\s+\w*\.?\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([-+]?\d+\.?\d*)%?',
+                'Trading Index': r'Trading\s+Index\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([-+]?\d+\.?\d*)%?',
+                'Mutual Fund': r'Mutual\s+Fund\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([-+]?\d+\.?\d*)%?'
+            }
+            
+            for index_name, pattern in index_patterns.items():
+                match = re.search(pattern, page_text, re.IGNORECASE)
+                if match:
+                    try:
+                        turnover = DataValidator.safe_float(match.group(1).replace(',', ''))
+                        value = DataValidator.safe_float(match.group(2).replace(',', ''))
+                        change_percent = DataValidator.safe_float(match.group(3))
+                        
+                        # Calculate point change from percentage
+                        point_change = (value * change_percent) / 100 if change_percent else 0
+                        prev_value = value - point_change
+                        
+                        index_data = {
+                            'index_name': index_name,
+                            'index_value': round(value, 2),
+                            'point_change': round(point_change, 2),
+                            'percent_change': round(change_percent, 2),
+                            'turnover': round(turnover, 2),
+                            'prev_close': round(prev_value, 2),
+                            'source': url,
+                            'scraped_at': datetime.now()
+                        }
+                        
+                        indices_data.append(index_data)
+                        logger.info(f"Parsed index: {index_name} - Value: {value}, Change: {change_percent}%")
+                        
+                    except Exception as e:
+                        logger.debug(f"Error parsing index {index_name}: {e}")
+                        continue
+            
+            logger.info(f"ShareSansar index parsing completed: {len(indices_data)} indices")
+            return indices_data
+        
+        except Exception as e:
+            logger.error(f"Error in ShareSansar index parsing: {e}")
+            return []
+    
+    # ==================== IPO SCRAPING METHODS ====================
+    
     def scrape_ipo_sources(self, force=False):
         """Scrape IPO/FPO/Rights from Nepali Paisa APIs into separate tables"""
         with self.scrape_lock:
@@ -126,7 +281,6 @@ class EnhancedScrapingService:
                     issues = self._scrape_api_source(source)
                     
                     if issues:
-                        # Save to specific table for this type
                         saved_count = self.ipo_service.save_issues_to_table(
                             issues, 
                             source['table_name'], 
@@ -164,7 +318,6 @@ class EnhancedScrapingService:
     def _scrape_api_source(self, source):
         """Scrape data from Nepali Paisa API source"""
         try:
-            # Add timestamp to prevent caching
             params = source['params'].copy()
             params['_'] = int(time.time() * 1000)
             
@@ -195,7 +348,6 @@ class EnhancedScrapingService:
             
             issues_data = []
             
-            # Handle the actual Nepali Paisa API response structure
             if isinstance(data, dict) and 'result' in data:
                 result_data = data['result']
                 if isinstance(result_data, list):
@@ -213,7 +365,7 @@ class EnhancedScrapingService:
             
             logger.info(f"Processing {len(items)} IPO items (limiting to 8)")
             
-            for item in items[:8]:  # Only process latest 8
+            for item in items[:8]:
                 try:
                     company_name = item.get('companyName', '').strip()
                     symbol = item.get('stockSymbol', '').strip()
@@ -227,16 +379,13 @@ class EnhancedScrapingService:
                     units = DataValidator.safe_int(item.get('units', 0))
                     price = DataValidator.safe_float(item.get('issuePrice', 100))
                     
-                    # Parse dates
                     open_date = self._parse_api_date(item.get('openingDate'))
                     close_date = self._parse_api_date(item.get('closingDate'))
                     
-                    # Get share type
                     share_type = item.get('shareType', 'Ordinary').strip()
                     if not share_type:
                         share_type = 'Ordinary'
                     
-                    # Determine status - UPDATED to handle 'nearing' from API
                     status = self._determine_status_from_api(item, open_date, close_date)
                     
                     issue_manager = item.get('issueManager', '').strip()
@@ -278,7 +427,6 @@ class EnhancedScrapingService:
             
             issues_data = []
             
-            # Handle the actual Nepali Paisa API response structure
             if isinstance(data, dict) and 'result' in data:
                 result_data = data['result']
                 if isinstance(result_data, list):
@@ -296,7 +444,7 @@ class EnhancedScrapingService:
             
             logger.info(f"Processing {len(items)} FPO items (limiting to 8)")
             
-            for item in items[:8]:  # Only process latest 8
+            for item in items[:8]:
                 try:
                     company_name = item.get('companyName', '').strip()
                     symbol = item.get('stockSymbol', '').strip()
@@ -310,16 +458,13 @@ class EnhancedScrapingService:
                     units = DataValidator.safe_int(item.get('units', 0))
                     price = DataValidator.safe_float(item.get('issuePrice', 100))
                     
-                    # Parse dates
                     open_date = self._parse_api_date(item.get('openingDate'))
                     close_date = self._parse_api_date(item.get('closingDate'))
                     
-                    # Get share type
                     share_type = item.get('shareType', 'Ordinary').strip()
                     if not share_type:
                         share_type = 'Ordinary'
                     
-                    # Determine status - UPDATED to handle 'nearing' from API
                     status = self._determine_status_from_api(item, open_date, close_date)
                     
                     issue_manager = item.get('issueManager', '').strip()
@@ -361,7 +506,6 @@ class EnhancedScrapingService:
             
             issues_data = []
             
-            # Handle the actual Nepali Paisa API response structure
             if isinstance(data, dict) and 'result' in data:
                 result_data = data['result']
                 if isinstance(result_data, list):
@@ -379,7 +523,7 @@ class EnhancedScrapingService:
             
             logger.info(f"Processing {len(items)} Rights/Dividend items (limiting to 8)")
             
-            for item in items[:8]:  # Only process latest 8
+            for item in items[:8]:
                 try:
                     company_name = item.get('companyName', '').strip()
                     symbol = item.get('stockSymbol', '').strip()
@@ -390,22 +534,18 @@ class EnhancedScrapingService:
                     if not symbol:
                         symbol = DataValidator.extract_symbol_from_company(company_name)
                     
-                    # Check if this is a rights share issue
                     right_share = item.get('rightShare', '').strip()
                     bonus_share = item.get('bonusShare', '').strip()
                     cash_dividend = item.get('cashDividend', '').strip()
                     
-                    # Determine issue type based on available data
                     issue_type = 'Rights'
                     if right_share and right_share not in ['', '0', '0%', 'N/A']:
                         issue_type = 'Rights'
                     elif bonus_share or cash_dividend:
                         issue_type = 'Dividend'
                     
-                    # Parse dates
                     book_close_date = self._parse_api_date(item.get('bookCloseDate') or item.get('bonusBookCloseDate') or item.get('rightBookCloseDate'))
                     
-                    # For rights/dividend, determine status based on book close date
                     status = self._determine_rights_status(item, book_close_date)
                     
                     fiscal_year = item.get('fiscalYear', '').strip()
@@ -444,7 +584,6 @@ class EnhancedScrapingService:
             return None
         
         try:
-            # Common API date formats
             date_formats = [
                 '%Y-%m-%d',
                 '%Y-%m-%dT%H:%M:%S',
@@ -463,7 +602,6 @@ class EnhancedScrapingService:
                 except ValueError:
                     continue
             
-            # If no format matches, try to extract date parts
             date_match = re.search(r'(\d{4})-(\d{1,2})-(\d{1,2})', date_str)
             if date_match:
                 year, month, day = map(int, date_match.groups())
@@ -477,52 +615,38 @@ class EnhancedScrapingService:
             return None
     
     def _determine_status_from_api(self, item, open_date, close_date):
-        """
-        Determine status from API item and dates
-        Maps 'nearing', 'coming', 'upcoming' from API to 'coming_soon' for database
-        """
-        # Check if API provides status directly
+        """Determine status from API item and dates"""
         api_status = item.get('status', '').lower().strip()
         
-        # Map API status values to our internal status
         if api_status in ['open', 'active', 'ongoing']:
             return 'open'
         elif api_status in ['closed', 'ended', 'finished', 'completed']:
             return 'closed'
         elif api_status in ['nearing', 'coming', 'upcoming', 'announced', 'coming soon', 'comingsoon']:
-            # KEY CHANGE: Map 'nearing' and similar terms to 'coming_soon'
             return 'coming_soon'
         
-        # Fallback to date-based determination
         return self._determine_status_from_dates(open_date, close_date)
     
     def _determine_rights_status(self, item, book_close_date):
-        """
-        Determine status for rights/dividend issues
-        Maps 'nearing' from API to 'coming_soon' for database
-        """
-        # Check if API provides status directly
+        """Determine status for rights/dividend issues"""
         api_status = item.get('status', '').lower().strip()
         
-        # Map API status values
         if api_status in ['open', 'active', 'ongoing']:
             return 'open'
         elif api_status in ['closed', 'ended', 'finished', 'completed']:
             return 'closed'
         elif api_status in ['nearing', 'coming', 'upcoming', 'announced', 'coming soon', 'comingsoon']:
-            # KEY CHANGE: Map 'nearing' to 'coming_soon'
             return 'coming_soon'
         
-        # Fallback to date-based determination
         if book_close_date:
             current_date = datetime.now().date()
             days_until = (book_close_date - current_date).days
             
-            if days_until < -7:  # More than a week past
+            if days_until < -7:
                 return 'closed'
-            elif days_until <= 0:  # Today or just passed
+            elif days_until <= 0:
                 return 'open'
-            elif days_until <= 7:  # Within next week
+            elif days_until <= 7:
                 return 'coming_soon'
             else:
                 return 'coming_soon'
@@ -530,20 +654,16 @@ class EnhancedScrapingService:
         return 'coming_soon'
     
     def _determine_status_from_dates(self, open_date, close_date):
-        """
-        Determine status from open and close dates
-        Returns 'coming_soon' for future issues
-        """
+        """Determine status from open and close dates"""
         current_date = datetime.now().date()
         
         if open_date and close_date:
             if current_date < open_date:
-                # Check if it's nearing (within next 7 days)
                 days_until = (open_date - current_date).days
                 if days_until <= 7:
-                    return 'coming_soon'  # Nearing
+                    return 'coming_soon'
                 else:
-                    return 'coming_soon'  # Future
+                    return 'coming_soon'
             elif open_date <= current_date <= close_date:
                 return 'open'
             else:
@@ -560,7 +680,8 @@ class EnhancedScrapingService:
         else:
             return 'coming_soon'
     
-    # Stock parsing methods
+    # ==================== STOCK SCRAPING METHODS ====================
+    
     def scrape_all_sources(self, force=False):
         """Scrape stock data from all available sources"""
         with self.scrape_lock:
@@ -583,7 +704,7 @@ class EnhancedScrapingService:
                             })
                             total_stocks = max(total_stocks, count)
                             logger.info(f"Successfully scraped {count} stocks from {source['name']}")
-                            break  # Use first successful source
+                            break
                     else:
                         logger.warning(f"Insufficient stock data from {source['name']}: {len(stocks) if stocks else 0} stocks")
                 
@@ -763,26 +884,35 @@ class EnhancedScrapingService:
                     return i
         return -1
     
-    def get_last_scrape_time(self):
-        """Get the timestamp of last successful stock scrape"""
-        return self.last_scrape_time
-    
-    def get_last_ipo_scrape_time(self):
-        """Get the timestamp of last successful IPO scrape"""
-        return self.last_ipo_scrape_time
+    # ==================== COMBINED SCRAPING ====================
     
     def scrape_all_data(self, force=False):
-        """Scrape both stock and IPO data"""
+        """Scrape stocks, indices, and IPO data"""
         stock_count = self.scrape_all_sources(force=force)
+        index_count = self.scrape_market_indices(force=force)
         ipo_count = self.scrape_ipo_sources(force=force)
         
         return {
             'stocks': stock_count,
+            'indices': index_count,
             'ipos': ipo_count,
-            'total': stock_count + ipo_count,
+            'total': stock_count + index_count + ipo_count,
             'last_stock_scrape': self.last_scrape_time,
+            'last_index_scrape': self.last_index_scrape_time,
             'last_ipo_scrape': self.last_ipo_scrape_time
         }
+    
+    def get_last_scrape_time(self):
+        """Get the timestamp of last successful stock scrape"""
+        return self.last_scrape_time
+    
+    def get_last_index_scrape_time(self):
+        """Get the timestamp of last successful index scrape"""
+        return self.last_index_scrape_time
+    
+    def get_last_ipo_scrape_time(self):
+        """Get the timestamp of last successful IPO scrape"""
+        return self.last_ipo_scrape_time
 
 
 class DataValidator:
@@ -815,7 +945,7 @@ class DataValidator:
         """Check if price is reasonable for Nepal stock market"""
         if not isinstance(price, (int, float)):
             return False
-        return 5 <= price <= 10000
+        return 5 <= price <= 50000
     
     @staticmethod
     def safe_float(value):
@@ -888,23 +1018,145 @@ class DataValidator:
         return symbol if len(symbol) >= 2 else company_name[:4]
 
 
+# Example Index Service class (you'll need to implement this)
+class IndexService:
+    """Service for managing market indices"""
+    
+    def __init__(self, db_service):
+        self.db_service = db_service
+        self._ensure_indices_table()
+    
+    def _ensure_indices_table(self):
+        """Create indices table if it doesn't exist"""
+        create_table_sql = """
+        CREATE TABLE IF NOT EXISTS market_indices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            index_name TEXT NOT NULL,
+            index_value REAL NOT NULL,
+            point_change REAL,
+            percent_change REAL,
+            turnover REAL,
+            prev_close REAL,
+            source TEXT,
+            scraped_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(index_name, scraped_at)
+        )
+        """
+        
+        try:
+            conn = self.db_service.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(create_table_sql)
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error creating indices table: {e}")
+    
+    def save_indices(self, indices, source_name):
+        """Save market indices to database"""
+        if not indices:
+            return 0
+        
+        try:
+            conn = self.db_service.get_connection()
+            cursor = conn.cursor()
+            
+            saved_count = 0
+            for index_data in indices:
+                try:
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO market_indices 
+                        (index_name, index_value, point_change, percent_change, 
+                         turnover, prev_close, source, scraped_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        index_data['index_name'],
+                        index_data['index_value'],
+                        index_data['point_change'],
+                        index_data['percent_change'],
+                        index_data['turnover'],
+                        index_data['prev_close'],
+                        index_data['source'],
+                        index_data['scraped_at']
+                    ))
+                    saved_count += 1
+                except Exception as e:
+                    logger.error(f"Error saving index {index_data.get('index_name')}: {e}")
+                    continue
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"Successfully saved {saved_count} indices from {source_name}")
+            return saved_count
+            
+        except Exception as e:
+            logger.error(f"Error saving indices to database: {e}")
+            return 0
+    
+    def get_latest_indices(self):
+        """Get the latest market indices"""
+        try:
+            conn = self.db_service.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT index_name, index_value, point_change, percent_change,
+                       turnover, prev_close, scraped_at
+                FROM market_indices
+                WHERE scraped_at = (SELECT MAX(scraped_at) FROM market_indices)
+                ORDER BY 
+                    CASE 
+                        WHEN index_name = 'NEPSE Index' THEN 0
+                        ELSE 1
+                    END,
+                    index_name
+            """)
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            indices = []
+            for row in rows:
+                indices.append({
+                    'index_name': row[0],
+                    'index_value': row[1],
+                    'point_change': row[2],
+                    'percent_change': row[3],
+                    'turnover': row[4],
+                    'prev_close': row[5],
+                    'scraped_at': row[6]
+                })
+            
+            return indices
+            
+        except Exception as e:
+            logger.error(f"Error fetching latest indices: {e}")
+            return []
+
+
 # Test function
-def test_cleaned_scraping():
-    """Test the cleaned scraping service"""
+def test_index_scraping():
+    """Test the index scraping functionality"""
     
     class MockPriceService:
         def save_stock_prices(self, stocks, source):
             print(f"Mock PriceService: Received {len(stocks)} stocks from {source}")
             return len(stocks)
     
+
     class MockDBService:
         def __init__(self):
             self.db_type = 'sqlite'
+            self.conn = None
         
         def get_connection(self):
-            return sqlite3.connect(':memory:')
+            if self.conn is None:
+                self.conn = sqlite3.connect(':memory:')
+            return self.conn
     
-    print("=== Testing Cleaned Scraping Service ===\n")
+    print("=== Testing Index Scraping Service ===\n")
     
     db_service = MockDBService()
     price_service = MockPriceService()
@@ -921,27 +1173,27 @@ def test_cleaned_scraping():
                 return len(issues)
     
     ipo_service = IPOService(db_service)
-    scraper = EnhancedScrapingService(price_service, ipo_service)
+    index_service = IndexService(db_service)
     
-    print("1. Testing cleaned configuration...")
+    scraper = EnhancedScrapingService(price_service, ipo_service, index_service)
+    
+    print("1. Configuration:")
     print(f"   Stock sources: {len(scraper.stock_sources)}")
-    print(f"   - ShareSansar Live Page")
-    print(f"   IPO sources: {len(scraper.ipo_sources)}")
-    print(f"   - Nepali Paisa IPO API")
-    print(f"   - Nepali Paisa FPO API")
-    print(f"   - Nepali Paisa Rights API\n")
+    print(f"   Index sources: {len(scraper.index_sources)}")
+    print(f"   IPO sources: {len(scraper.ipo_sources)}\n")
     
-    print("2. Removed sources:")
-    print("   ✗ ShareSansar API (404 errors)")
-    print("   ✗ MeroLagani Live (not used)\n")
+    print("2. Testing index scraping...")
+    index_count = scraper.scrape_market_indices()
+    print(f"   Scraped {index_count} market indices\n")
     
-    print("3. Benefits:")
-    print("   ✓ Faster scraping (no failed attempts)")
-    print("   ✓ Cleaner logs (no 404 warnings)")
-    print("   ✓ Simplified maintenance")
-    print("   ✓ More reliable data collection\n")
+    if index_count > 0:
+        print("3. Fetching latest indices...")
+        latest_indices = index_service.get_latest_indices()
+        print(f"   Found {len(latest_indices)} indices:")
+        for idx in latest_indices[:5]:
+            print(f"   - {idx['index_name']}: {idx['index_value']} ({idx['percent_change']:+.2f}%)")
     
-    print("=== Test completed ===")
+    print("\n=== Test completed ===")
 
 
 # Main execution
@@ -956,4 +1208,4 @@ if __name__ == "__main__":
     )
     
     # Run the test
-    test_cleaned_scraping()
+    test_index_scraping()
