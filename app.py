@@ -1,4 +1,4 @@
-# app.py - Updated for split database configuration with IndexService
+# app.py - Updated with Market Overview Service
 
 import os
 import logging
@@ -19,12 +19,14 @@ from push_notification_service import PushNotificationService
 from ipo_notification_checker import IPONotificationChecker
 from nepse_history_service import NepseHistoryService
 from technical_analysis_service import TechnicalAnalysisService
+from market_overview_service import MarketOverviewService
 
 # Import modular components
 from scheduler import SmartScheduler
 from routes import register_all_routes
 from routes_nepse_history import register_nepse_history_routes
 from routes_technical_analysis import register_technical_analysis_routes
+from routes_market_overview import register_market_overview_routes
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -61,7 +63,7 @@ class NepalStockApp:
         self.index_service = IndexService(self.db_service)
         logger.info("Index service initialized - market_indices table created")
         
-        # Initialize scraping service with index support (removed db_service parameter)
+        # Initialize scraping service with index support
         self.scraping_service = EnhancedScrapingService(
             self.price_service, 
             self.ipo_service,
@@ -89,13 +91,21 @@ class NepalStockApp:
         self.technical_analysis_service = TechnicalAnalysisService(self.nepse_history_service)
         logger.info("Technical analysis service initialized")
         
+        # Initialize Market Overview Service
+        self.market_overview_service = MarketOverviewService(
+            self.db_service,
+            self.price_service
+        )
+        logger.info("Market overview service initialized")
+        
         # Initialize intelligent scheduler
         self.smart_scheduler = SmartScheduler(
             self.scraping_service, 
             self.price_service, 
             self.db_service,
             self.notification_checker,
-            self.nepse_history_service
+            self.nepse_history_service,
+            self.market_overview_service
         )
         
         # Create Flask app
@@ -107,13 +117,14 @@ class NepalStockApp:
         self.app.config['auth_service'] = self.auth_service
         self.app.config['price_service'] = self.price_service
         self.app.config['ipo_service'] = self.ipo_service
-        self.app.config['index_service'] = self.index_service  # Add index service to config
+        self.app.config['index_service'] = self.index_service
         self.app.config['scraping_service'] = self.scraping_service
         self.app.config['push_service'] = self.push_service
         self.app.config['notification_checker'] = self.notification_checker
         self.app.config['smart_scheduler'] = self.smart_scheduler
         self.app.config['nepse_history_service'] = self.nepse_history_service
         self.app.config['technical_analysis_service'] = self.technical_analysis_service
+        self.app.config['market_overview_service'] = self.market_overview_service
         
         # Create authentication decorators
         self.require_auth, self.require_admin = create_auth_decorators(self.auth_service)
@@ -124,6 +135,7 @@ class NepalStockApp:
         register_all_routes(self.app)
         register_nepse_history_routes(self.app)
         register_technical_analysis_routes(self.app)
+        register_market_overview_routes(self.app)
         
         # Initialize data
         self._initialize_app()
@@ -163,6 +175,15 @@ class NepalStockApp:
             logger.info(f"NEPSE history initialized: {history_results}")
         except Exception as e:
             logger.warning(f"Initial NEPSE history scrape failed: {e}")
+        
+        # Calculate initial market overview
+        logger.info("Calculating initial market overview...")
+        try:
+            initial_overview = self.market_overview_service.save_overview_snapshot(limit=10)
+            if initial_overview:
+                logger.info(f"Initial market overview snapshot created (ID: {initial_overview})")
+        except Exception as e:
+            logger.warning(f"Initial market overview calculation failed: {e}")
         
         # Start intelligent scheduler
         try:

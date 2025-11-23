@@ -1,4 +1,4 @@
-# scheduler.py - Smart Scheduler with NEPSE History and IPO Scraping Support
+# scheduler.py - Smart Scheduler with NEPSE History, IPO, and Market Overview Support
 
 import logging
 import hashlib
@@ -12,14 +12,16 @@ logger = logging.getLogger(__name__)
 
 
 class SmartScheduler:
-    """Intelligent scheduler for market-aware scraping, IPO notifications, NEPSE history, and IPO scraping"""
+    """Intelligent scheduler for market-aware scraping, IPO notifications, NEPSE history, and market overview"""
     
-    def __init__(self, scraping_service, price_service, db_service, notification_checker, nepse_history_service):
+    def __init__(self, scraping_service, price_service, db_service, notification_checker, 
+                 nepse_history_service, market_overview_service):
         self.scraping_service = scraping_service
         self.price_service = price_service
         self.db_service = db_service
         self.notification_checker = notification_checker
         self.nepse_history_service = nepse_history_service
+        self.market_overview_service = market_overview_service
         self.scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Kathmandu'))
         
         # Market configuration for Nepal (Sunday-Thursday, 11 AM - 3 PM)
@@ -224,8 +226,50 @@ class SmartScheduler:
             if self.market_closed_today:
                 logger.info("Market detected as closed - future scrapes will be skipped today")
             
+            # Calculate and store market overview after scrape completes
+            if data_changed:
+                self.scheduled_market_overview()
+            
         except Exception as e:
             logger.error(f"Scheduled scrape failed: {e}")
+    
+    def scheduled_market_overview(self):
+        """
+        Execute market overview calculation after each scrape.
+        Called automatically after every stock data update.
+        """
+        try:
+            logger.info("=== Calculating Market Overview ===")
+            
+            # Calculate and save overview snapshot
+            snapshot_id = self.market_overview_service.save_overview_snapshot(limit=10)
+            
+            if snapshot_id:
+                # Get the saved data for logging
+                overview = self.market_overview_service.get_latest_overview()
+                
+                if overview:
+                    logger.info(f"Market Overview Snapshot ID: {snapshot_id}")
+                    logger.info(f"Total Stocks: {overview['data']['total_stocks']}")
+                    logger.info(f"Advancing: {overview['data']['market_stats']['advancing']}, "
+                               f"Declining: {overview['data']['market_stats']['declining']}, "
+                               f"Unchanged: {overview['data']['market_stats']['unchanged']}")
+                    logger.info(f"Total Turnover: {overview['data']['market_stats']['total_turnover']:,.0f}")
+                    
+                    # Log top gainer
+                    if overview['data']['top_gainers']:
+                        top = overview['data']['top_gainers'][0]
+                        logger.info(f"Top Gainer: {top['symbol']} ({top['change_percent']}%)")
+                    
+                    # Log top loser
+                    if overview['data']['top_losers']:
+                        top = overview['data']['top_losers'][0]
+                        logger.info(f"Top Loser: {top['symbol']} ({top['change_percent']}%)")
+            else:
+                logger.warning("Failed to save market overview snapshot")
+                
+        except Exception as e:
+            logger.error(f"Market overview calculation failed: {e}")
     
     def scheduled_ipo_scrape(self):
         """Execute scheduled IPO/FPO/Rights data scrape - once daily at 11:10 AM"""
@@ -292,6 +336,15 @@ class SmartScheduler:
         except Exception as e:
             logger.error(f"Scheduled NEPSE history scrape failed: {e}")
     
+    def scheduled_overview_cleanup(self):
+        """Execute market overview data cleanup"""
+        try:
+            logger.info("=== Market Overview Cleanup Started ===")
+            self.market_overview_service.cleanup_old_snapshots(keep_days=7)
+            logger.info("Market overview cleanup completed")
+        except Exception as e:
+            logger.error(f"Market overview cleanup failed: {e}")
+    
     def start(self):
         """Start the intelligent scheduler with all jobs"""
         try:
@@ -355,17 +408,34 @@ class SmartScheduler:
                 replace_existing=True
             )
             
+            # Job 5: Market overview cleanup - once daily at 11:59 PM
+            self.scheduler.add_job(
+                func=self.scheduled_overview_cleanup,
+                trigger=CronTrigger(
+                    day_of_week='sun,mon,tue,wed,thu',
+                    hour='23',
+                    minute='59',
+                    timezone=self.nepal_tz
+                ),
+                id='overview_cleanup',
+                name='Market Overview Cleanup (11:59 PM)',
+                max_instances=1,
+                replace_existing=True
+            )
+            
             self.scheduler.start()
             logger.info("Intelligent scheduler started successfully")
             logger.info("Stock scrapes: Every 5 minutes during market hours (11 AM - 3 PM, Sun-Thu)")
             logger.info("IPO scrapes: Once daily at 11:10 AM on market days (Sun-Thu)")
             logger.info("IPO notifications: Once daily at 5:52 PM on market days (Sun-Thu)")
             logger.info("NEPSE history: Daily at 4:00 PM (Sun-Thu)")
+            logger.info("Market overview cleanup: Daily at 11:59 PM (Sun-Thu)")
             
             next_scrape = self.scheduler.get_job('market_scraper').next_run_time
             next_ipo_scrape = self.scheduler.get_job('ipo_scraper').next_run_time
             next_ipo_notif = self.scheduler.get_job('ipo_notification').next_run_time
             next_history = self.scheduler.get_job('nepse_history_scraper').next_run_time
+            next_cleanup = self.scheduler.get_job('overview_cleanup').next_run_time
             
             if next_scrape:
                 logger.info(f"Next stock scrape: {next_scrape.strftime('%Y-%m-%d %H:%M:%S %Z')}")
@@ -375,6 +445,8 @@ class SmartScheduler:
                 logger.info(f"Next IPO notification: {next_ipo_notif.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             if next_history:
                 logger.info(f"Next NEPSE history scrape: {next_history.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            if next_cleanup:
+                logger.info(f"Next market overview cleanup: {next_cleanup.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             
         except Exception as e:
             logger.error(f"Failed to start scheduler: {e}")
@@ -395,6 +467,7 @@ class SmartScheduler:
                 'next_ipo_scrape': None,
                 'next_ipo_notification': None,
                 'next_nepse_history_scrape': None,
+                'next_overview_cleanup': None,
                 'current_nepal_time': self._get_current_nepal_time().isoformat(),
                 'market_currently_open': self._is_market_open(),
                 'today_scrape_info': self._get_today_scrape_info(),
@@ -406,6 +479,7 @@ class SmartScheduler:
                 ipo_scrape_job = self.scheduler.get_job('ipo_scraper')
                 ipo_notif_job = self.scheduler.get_job('ipo_notification')
                 history_job = self.scheduler.get_job('nepse_history_scraper')
+                cleanup_job = self.scheduler.get_job('overview_cleanup')
                 
                 if stock_job and stock_job.next_run_time:
                     status['next_stock_scrape'] = stock_job.next_run_time.isoformat()
@@ -415,6 +489,8 @@ class SmartScheduler:
                     status['next_ipo_notification'] = ipo_notif_job.next_run_time.isoformat()
                 if history_job and history_job.next_run_time:
                     status['next_nepse_history_scrape'] = history_job.next_run_time.isoformat()
+                if cleanup_job and cleanup_job.next_run_time:
+                    status['next_overview_cleanup'] = cleanup_job.next_run_time.isoformat()
             
             return status
             
