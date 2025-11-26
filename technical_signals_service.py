@@ -673,15 +673,24 @@ class TechnicalSignalsService:
         finally:
             conn.close()
     
-    def get_trades_history(self, limit: int = 50) -> List[Dict]:
-        """Get historical completed trades"""
+    def get_trades_history(self, include_skipped: bool = False, limit: int = 50) -> List[Dict]:
+        """
+        Get historical completed trades
+        
+        Args:
+            include_skipped: Currently unused - all trades in DB are completed trades
+            limit: Maximum number of trades to return
+        
+        Returns:
+            List of trade dictionaries
+        """
         conn = self.db_service.get_connection()
         cursor = conn.cursor()
         
         try:
             cursor.execute('''
                 SELECT entry_date, entry_price, exit_date, exit_price, 
-                       return_pct, days_held, result
+                    return_pct, days_held, result
                 FROM nepse_completed_trades
                 ORDER BY entry_date DESC
                 LIMIT ?
@@ -696,7 +705,8 @@ class TechnicalSignalsService:
                     'exit_price': round(row[3], 2),
                     'return': round(row[4], 2),
                     'days_held': row[5],
-                    'result': row[6]
+                    'result': row[6],
+                    'was_skipped': False  # All trades in DB are completed, not skipped
                 })
             
             return trades
