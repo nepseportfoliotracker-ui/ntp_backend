@@ -316,7 +316,7 @@ class SmartScheduler:
             logger.error(f"Scheduled IPO notification failed: {e}")
     
     def scheduled_nepse_history_scrape(self):
-        """Execute scheduled NEPSE history scraping"""
+        """Execute scheduled NEPSE history scraping with signal generation"""
         try:
             logger.info("=== Scheduled NEPSE History Scrape Started ===")
             
@@ -333,8 +333,59 @@ class SmartScheduler:
             self.nepse_history_service.clean_old_data()
             logger.info("Old NEPSE history data cleaned")
             
+            # Generate trading signals after scraping
+            self.scheduled_generate_signals()
+            
         except Exception as e:
             logger.error(f"Scheduled NEPSE history scrape failed: {e}")
+
+    def scheduled_generate_signals(self):
+        """Execute trading signal generation after NEPSE history update"""
+        try:
+            logger.info("=== Generating Trading Signals for Tomorrow ===")
+            
+            # Import here to avoid circular dependency
+            from technical_signals_service import TechnicalSignalsService
+            
+            # Create signals service if not already available
+            if not hasattr(self, 'signals_service'):
+                self.signals_service = TechnicalSignalsService(
+                    self.db_service,
+                    self.nepse_history_service
+                )
+            
+            # Generate signals with default parameters
+            result = self.signals_service.generate_signals(
+                ema_short_period=5,
+                ema_long_period=20,
+                min_holding_days=3
+            )
+            
+            if result['success']:
+                logger.info("Trading signal generation completed successfully")
+                
+                if result['latest_signal']:
+                    signal = result['latest_signal']
+                    logger.info(f"Latest Signal: {signal['type'].upper()}")
+                    logger.info(f"  Date: {signal['date']}")
+                    logger.info(f"  Price: {signal['price']}")
+                    logger.info(f"  EMA (5): {signal['ema_short']}")
+                    logger.info(f"  EMA (20): {signal['ema_long']}")
+                    logger.info(f"  Confidence: {signal['confidence']:.1f}%")
+                
+                if result['analysis']:
+                    analysis = result['analysis']
+                    logger.info(f"Signal Statistics:")
+                    logger.info(f"  Total Signals: {analysis.get('total_signals', 0)}")
+                    logger.info(f"  Buy Signals: {analysis.get('buy_signals', 0)}")
+                    logger.info(f"  Sell Signals: {analysis.get('sell_signals', 0)}")
+                    logger.info(f"  Win Rate: {analysis.get('win_rate', 0):.1f}%")
+                    logger.info(f"  Last Signal Type: {analysis.get('last_signal', 'N/A')}")
+            else:
+                logger.warning(f"Signal generation failed: {result.get('error', 'Unknown error')}")
+            
+        except Exception as e:
+            logger.error(f"Failed to generate trading signals: {e}")
     
     def scheduled_overview_cleanup(self):
         """Execute market overview data cleanup"""

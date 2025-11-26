@@ -20,6 +20,8 @@ from ipo_notification_checker import IPONotificationChecker
 from nepse_history_service import NepseHistoryService
 from technical_analysis_service import TechnicalAnalysisService
 from market_overview_service import MarketOverviewService
+from technical_signals_service import TechnicalSignalsService
+from routes_trading_signals import register_trading_signals_routes
 
 # Import modular components
 from scheduler import SmartScheduler
@@ -98,6 +100,13 @@ class NepalStockApp:
         )
         logger.info("Market overview service initialized")
         
+        # Initialize Technical Signals Service
+        self.technical_signals_service = TechnicalSignalsService(
+            self.db_service,
+            self.nepse_history_service
+        )
+        logger.info("Technical signals service initialized")
+        
         # Initialize intelligent scheduler
         self.smart_scheduler = SmartScheduler(
             self.scraping_service, 
@@ -107,6 +116,9 @@ class NepalStockApp:
             self.nepse_history_service,
             self.market_overview_service
         )
+        
+        # Add signals service to scheduler
+        self.smart_scheduler.signals_service = self.technical_signals_service
         
         # Create Flask app
         self.app = Flask(__name__)
@@ -125,6 +137,7 @@ class NepalStockApp:
         self.app.config['nepse_history_service'] = self.nepse_history_service
         self.app.config['technical_analysis_service'] = self.technical_analysis_service
         self.app.config['market_overview_service'] = self.market_overview_service
+        self.app.config['technical_signals_service'] = self.technical_signals_service
         
         # Create authentication decorators
         self.require_auth, self.require_admin = create_auth_decorators(self.auth_service)
@@ -136,6 +149,7 @@ class NepalStockApp:
         register_nepse_history_routes(self.app)
         register_technical_analysis_routes(self.app)
         register_market_overview_routes(self.app)
+        register_trading_signals_routes(self.app)
         
         # Initialize data
         self._initialize_app()
@@ -175,6 +189,35 @@ class NepalStockApp:
             logger.info(f"NEPSE history initialized: {history_results}")
         except Exception as e:
             logger.warning(f"Initial NEPSE history scrape failed: {e}")
+
+        # Generate initial trading signals
+        logger.info("Generating initial trading signals...")
+        try:
+            signals_result = self.technical_signals_service.generate_signals(
+                ema_period=3,
+                min_holding_days=3
+            )
+            if signals_result['success']:
+                logger.info(f"Initial trading signals generated successfully")
+                if signals_result['latest_signal']:
+                    sig = signals_result['latest_signal']
+                    logger.info(f"  Latest signal: {sig['type'].upper()} on {sig['date']} at price {sig['price']}")
+                    logger.info(f"  EMA value: {sig['ema']}")
+                    if sig.get('days_since_last'):
+                        logger.info(f"  Days since last signal: {sig['days_since_last']}")
+                
+                # Show trade statistics
+                if signals_result.get('trades'):
+                    trades = signals_result['trades']
+                    logger.info(f"  Completed trades: {trades['completed']}")
+                    logger.info(f"  Win rate: {trades['win_rate']}%")
+                    logger.info(f"  Total return: {trades['total_return']}%")
+            else:
+                logger.warning(f"Signal generation failed: {signals_result.get('error')}")
+        except Exception as e:
+            logger.warning(f"Initial signal generation failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         
         # Calculate initial market overview
         logger.info("Calculating initial market overview...")
