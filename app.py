@@ -1,4 +1,4 @@
-# app.py - Updated with Market Overview Service
+# app.py - Updated with Market Overview Service and Price History Service
 
 import os
 import logging
@@ -21,6 +21,7 @@ from nepse_history_service import NepseHistoryService
 from technical_analysis_service import TechnicalAnalysisService
 from market_overview_service import MarketOverviewService
 from technical_signals_service import TechnicalSignalsService
+from price_history_service import PriceHistoryService
 from routes_trading_signals import register_trading_signals_routes
 
 # Import modular components
@@ -29,6 +30,7 @@ from routes import register_all_routes
 from routes_nepse_history import register_nepse_history_routes
 from routes_technical_analysis import register_technical_analysis_routes
 from routes_market_overview import register_market_overview_routes
+from routes_price_history import register_price_history_routes
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -107,6 +109,10 @@ class NepalStockApp:
         )
         logger.info("Technical signals service initialized")
         
+        # Initialize Persistent Price History Service
+        self.price_history_service = PriceHistoryService(self.db_service)
+        logger.info("Persistent price history service initialized (30-day rolling window)")
+        
         # Initialize intelligent scheduler
         self.smart_scheduler = SmartScheduler(
             self.scraping_service, 
@@ -114,7 +120,8 @@ class NepalStockApp:
             self.db_service,
             self.notification_checker,
             self.nepse_history_service,
-            self.market_overview_service
+            self.market_overview_service,
+            self.price_history_service
         )
         
         # Add signals service to scheduler
@@ -138,6 +145,7 @@ class NepalStockApp:
         self.app.config['technical_analysis_service'] = self.technical_analysis_service
         self.app.config['market_overview_service'] = self.market_overview_service
         self.app.config['technical_signals_service'] = self.technical_signals_service
+        self.app.config['price_history_service'] = self.price_history_service
         
         # Create authentication decorators
         self.require_auth, self.require_admin = create_auth_decorators(self.auth_service)
@@ -150,6 +158,7 @@ class NepalStockApp:
         register_technical_analysis_routes(self.app)
         register_market_overview_routes(self.app)
         register_trading_signals_routes(self.app)
+        register_price_history_routes(self.app)
         
         # Initialize data
         self._initialize_app()
@@ -166,6 +175,18 @@ class NepalStockApp:
             logger.info(f"    Path: {info.get('path', 'N/A')}")
             logger.info(f"    Persistent: {info.get('persistent', False)}")
             logger.info(f"    Size: {info.get('size_mb', 0)} MB")
+        logger.info("=" * 60)
+        
+        # Show price history database info
+        history_info = self.price_history_service.get_history_database_info()
+        logger.info("=" * 60)
+        logger.info("PRICE HISTORY DATABASE (PERSISTENT):")
+        logger.info(f"  Path: {history_info.get('path', 'N/A')}")
+        logger.info(f"  Persistent: {history_info.get('persistent', False)}")
+        logger.info(f"  Volume Mount: {history_info.get('volume_mount', 'N/A')}")
+        logger.info(f"  Size: {history_info.get('size_mb', 0)} MB")
+        logger.info(f"  Records: {history_info.get('total_records', 0)}")
+        logger.info(f"  Symbols: {history_info.get('total_symbols', 0)}")
         logger.info("=" * 60)
         
         # Check for admin keys
@@ -228,6 +249,25 @@ class NepalStockApp:
         except Exception as e:
             logger.warning(f"Initial market overview calculation failed: {e}")
         
+        # Save initial daily prices to persistent history on startup
+        logger.info("Saving initial daily prices to persistent history on startup...")
+        try:
+            stocks_data = self.price_service.get_all_stocks()
+            if stocks_data:
+                result = self.price_history_service.save_daily_prices(stocks_data)
+                if result['success']:
+                    logger.info(f"Initial price history save completed on startup")
+                    logger.info(f"  Saved: {result['saved']} stocks")
+                    logger.info(f"  Skipped: {result['skipped']} stocks")
+                    logger.info(f"  Rotated: {result['rotated']} old records")
+                    logger.info(f"  Date: {result['date']}")
+                else:
+                    logger.warning(f"Initial price history save failed: {result.get('error')}")
+            else:
+                logger.warning("No stock data available for initial price history save")
+        except Exception as e:
+            logger.warning(f"Initial price history save failed: {e}")
+        
         # Start intelligent scheduler
         try:
             self.smart_scheduler.start()
@@ -271,6 +311,7 @@ class NepalStockApp:
         logger.info(f"Host: {self.flask_host}, Port: {self.flask_port}")
         logger.info(f"Auth Database: Persistent (survives deployments)")
         logger.info(f"Data Database: Ephemeral (fresh data on each deployment)")
+        logger.info(f"Price History: Persistent 30-day rolling window")
         
         # Graceful shutdown handler
         def signal_handler(sig, frame):

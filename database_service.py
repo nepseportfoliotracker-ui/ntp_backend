@@ -1,4 +1,4 @@
-# database_service.py - Split database: persistent auth + ephemeral data
+# database_service.py - Split database: persistent auth + ephemeral data + persistent price history
 
 import sqlite3
 import logging
@@ -7,7 +7,7 @@ import os
 logger = logging.getLogger(__name__)
 
 class DatabaseService:
-    """Database service with separate auth and data databases"""
+    """Database service with separate auth, data, and price history databases"""
     
     def __init__(self, data_db_path=None, auth_db_path=None):
         self.db_type = 'sqlite'
@@ -71,7 +71,7 @@ class DatabaseService:
         return self.get_connection('data')
     
     def get_database_info(self):
-        """Get information about both databases"""
+        """Get information about all databases"""
         info = {
             'type': self.db_type,
             'databases': {}

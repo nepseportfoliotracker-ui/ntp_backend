@@ -1,4 +1,4 @@
-# scheduler.py - Smart Scheduler with NEPSE History, IPO, and Market Overview Support
+# scheduler.py - Smart Scheduler with Price History Support
 
 import logging
 import hashlib
@@ -12,16 +12,17 @@ logger = logging.getLogger(__name__)
 
 
 class SmartScheduler:
-    """Intelligent scheduler for market-aware scraping, IPO notifications, NEPSE history, and market overview"""
+    """Intelligent scheduler for market-aware scraping, IPO notifications, NEPSE history, market overview, and price history"""
     
     def __init__(self, scraping_service, price_service, db_service, notification_checker, 
-                 nepse_history_service, market_overview_service):
+                 nepse_history_service, market_overview_service, price_history_service=None):
         self.scraping_service = scraping_service
         self.price_service = price_service
         self.db_service = db_service
         self.notification_checker = notification_checker
         self.nepse_history_service = nepse_history_service
         self.market_overview_service = market_overview_service
+        self.price_history_service = price_history_service
         self.scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Kathmandu'))
         
         # Market configuration for Nepal (Sunday-Thursday, 11 AM - 3 PM)
@@ -396,6 +397,40 @@ class SmartScheduler:
         except Exception as e:
             logger.error(f"Market overview cleanup failed: {e}")
     
+    def scheduled_save_daily_prices(self):
+        """
+        Save today's closing prices to persistent 30-day history.
+        Called at market close (3:05 PM) after final scrape.
+        """
+        try:
+            if not self.price_history_service:
+                logger.warning("Price history service not available - skipping daily price save")
+                return
+            
+            logger.info("=== Saving Daily Closing Prices Started (3:05 PM) ===")
+            
+            # Get all current stocks
+            stocks_data = self.price_service.get_all_stocks()
+            
+            if not stocks_data:
+                logger.warning("No stock data available for daily price save")
+                return
+            
+            # Save to persistent history
+            result = self.price_history_service.save_daily_prices(stocks_data)
+            
+            if result['success']:
+                logger.info(f"Daily closing prices saved successfully to persistent history")
+                logger.info(f"  Saved: {result['saved']} stocks")
+                logger.info(f"  Skipped: {result['skipped']} stocks")
+                logger.info(f"  Date: {result['date']}")
+                logger.info(f"  Location: {self.price_history_service.history_db_path}")
+            else:
+                logger.error(f"Failed to save daily prices: {result.get('error')}")
+        
+        except Exception as e:
+            logger.error(f"Scheduled daily price save failed: {e}")
+    
     def start(self):
         """Start the intelligent scheduler with all jobs"""
         try:
@@ -425,6 +460,21 @@ class SmartScheduler:
                 ),
                 id='market_close_scraper',
                 name='Market Close Stock Price Scraper (3:02 PM)',
+                max_instances=1,
+                replace_existing=True
+            )
+            
+            # Job 1c: Save daily prices to persistent history - once daily at 3:05 PM (after scrape)
+            self.scheduler.add_job(
+                func=self.scheduled_save_daily_prices,
+                trigger=CronTrigger(
+                    day_of_week='sun,mon,tue,wed,thu',
+                    hour='15',
+                    minute='5',
+                    timezone=self.nepal_tz
+                ),
+                id='daily_price_save',
+                name='Save Daily Closing Prices to Persistent History (3:05 PM)',
                 max_instances=1,
                 replace_existing=True
             )
@@ -492,12 +542,14 @@ class SmartScheduler:
             self.scheduler.start()
             logger.info("Intelligent scheduler started successfully")
             logger.info("Stock scrapes: Every 5 minutes during market hours (11 AM - 3 PM, Sun-Thu)")
+            logger.info("Daily price save: 3:05 PM on market days (Sun-Thu) to persistent history")
             logger.info("IPO scrapes: Once daily at 11:10 AM on market days (Sun-Thu)")
             logger.info("IPO notifications: Once daily at 5:52 PM on market days (Sun-Thu)")
             logger.info("NEPSE history: Daily at 3:10 PM (Sun-Thu)")
             logger.info("Market overview cleanup: Daily at 11:59 PM (Sun-Thu)")
             
             next_scrape = self.scheduler.get_job('market_scraper').next_run_time
+            next_price_save = self.scheduler.get_job('daily_price_save').next_run_time
             next_ipo_scrape = self.scheduler.get_job('ipo_scraper').next_run_time
             next_ipo_notif = self.scheduler.get_job('ipo_notification').next_run_time
             next_history = self.scheduler.get_job('nepse_history_scraper').next_run_time
@@ -505,6 +557,8 @@ class SmartScheduler:
             
             if next_scrape:
                 logger.info(f"Next stock scrape: {next_scrape.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            if next_price_save:
+                logger.info(f"Next price save: {next_price_save.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             if next_ipo_scrape:
                 logger.info(f"Next IPO scrape: {next_ipo_scrape.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             if next_ipo_notif:
@@ -530,6 +584,7 @@ class SmartScheduler:
             status = {
                 'scheduler_running': self.scheduler.running if hasattr(self, 'scheduler') else False,
                 'next_stock_scrape': None,
+                'next_price_save': None,
                 'next_ipo_scrape': None,
                 'next_ipo_notification': None,
                 'next_nepse_history_scrape': None,
@@ -542,6 +597,7 @@ class SmartScheduler:
             
             if self.scheduler.running:
                 stock_job = self.scheduler.get_job('market_scraper')
+                price_save_job = self.scheduler.get_job('daily_price_save')
                 ipo_scrape_job = self.scheduler.get_job('ipo_scraper')
                 ipo_notif_job = self.scheduler.get_job('ipo_notification')
                 history_job = self.scheduler.get_job('nepse_history_scraper')
@@ -549,6 +605,8 @@ class SmartScheduler:
                 
                 if stock_job and stock_job.next_run_time:
                     status['next_stock_scrape'] = stock_job.next_run_time.isoformat()
+                if price_save_job and price_save_job.next_run_time:
+                    status['next_price_save'] = price_save_job.next_run_time.isoformat()
                 if ipo_scrape_job and ipo_scrape_job.next_run_time:
                     status['next_ipo_scrape'] = ipo_scrape_job.next_run_time.isoformat()
                 if ipo_notif_job and ipo_notif_job.next_run_time:
