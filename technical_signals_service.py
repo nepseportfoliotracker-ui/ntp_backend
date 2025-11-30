@@ -347,7 +347,7 @@ class TechnicalSignalsService:
         finally:
             conn.close()
     
-    def generate_signals(self, ema_period: int = 20, min_holding_days: int = 3) -> Dict:
+    def generate_signals(self, ema_period: int = 3, min_holding_days: int = 3) -> Dict:
         """
         Generate trading signals from NEPSE historical data
         Pure crossover-based signals with minimum holding period enforcement

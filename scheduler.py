@@ -357,8 +357,7 @@ class SmartScheduler:
             
             # Generate signals with default parameters
             result = self.signals_service.generate_signals(
-                ema_short_period=5,
-                ema_long_period=20,
+                ema_period=3,
                 min_holding_days=3
             )
             
@@ -370,9 +369,8 @@ class SmartScheduler:
                     logger.info(f"Latest Signal: {signal['type'].upper()}")
                     logger.info(f"  Date: {signal['date']}")
                     logger.info(f"  Price: {signal['price']}")
-                    logger.info(f"  EMA (5): {signal['ema_short']}")
-                    logger.info(f"  EMA (20): {signal['ema_long']}")
-                    logger.info(f"  Confidence: {signal['confidence']:.1f}%")
+                    logger.info(f"  EMA (3): {signal['ema']}")
+
                 
                 if result['analysis']:
                     analysis = result['analysis']
