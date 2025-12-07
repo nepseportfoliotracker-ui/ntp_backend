@@ -31,7 +31,6 @@ from routes_nepse_history import register_nepse_history_routes
 from routes_technical_analysis import register_technical_analysis_routes
 from routes_market_overview import register_market_overview_routes
 from routes_price_history import register_price_history_routes
-from routes_trading_signals import register_trading_signals_routes
 from routes_ema_signals import register_ema_signal_routes
 
 # Configure logging
@@ -170,7 +169,6 @@ class NepalStockApp:
         register_nepse_history_routes(self.app)
         register_technical_analysis_routes(self.app)
         register_market_overview_routes(self.app)
-        register_trading_signals_routes(self.app)
         register_price_history_routes(self.app)
         register_ema_signal_routes(self.app)
         
