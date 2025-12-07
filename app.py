@@ -1,4 +1,4 @@
-# app.py - Updated with Market Overview Service and Price History Service
+# app.py - Updated with EMA Signal Service
 
 import os
 import logging
@@ -22,7 +22,7 @@ from technical_analysis_service import TechnicalAnalysisService
 from market_overview_service import MarketOverviewService
 from technical_signals_service import TechnicalSignalsService
 from price_history_service import PriceHistoryService
-from routes_trading_signals import register_trading_signals_routes
+from ema_signal_service import EMASignalService
 
 # Import modular components
 from scheduler import SmartScheduler
@@ -31,6 +31,8 @@ from routes_nepse_history import register_nepse_history_routes
 from routes_technical_analysis import register_technical_analysis_routes
 from routes_market_overview import register_market_overview_routes
 from routes_price_history import register_price_history_routes
+from routes_trading_signals import register_trading_signals_routes
+from routes_ema_signals import register_ema_signal_routes
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -113,7 +115,16 @@ class NepalStockApp:
         self.price_history_service = PriceHistoryService(self.db_service)
         logger.info("Persistent price history service initialized (30-day rolling window)")
         
-        # Initialize intelligent scheduler
+        # Initialize EMA Signal Service (4-day EMA with 2-day minimum holding period)
+        self.ema_signal_service = EMASignalService(
+            self.db_service,
+            self.nepse_history_service,
+            ema_period=4,
+            min_holding_days=2
+        )
+        logger.info("EMA signal service initialized (4-day EMA, 2-day holding period)")
+        
+        # Initialize intelligent scheduler with EMA signal service
         self.smart_scheduler = SmartScheduler(
             self.scraping_service, 
             self.price_service, 
@@ -121,10 +132,11 @@ class NepalStockApp:
             self.notification_checker,
             self.nepse_history_service,
             self.market_overview_service,
-            self.price_history_service
+            self.price_history_service,
+            self.ema_signal_service
         )
         
-        # Add signals service to scheduler
+        # Add signals service to scheduler for compatibility
         self.smart_scheduler.signals_service = self.technical_signals_service
         
         # Create Flask app
@@ -146,6 +158,7 @@ class NepalStockApp:
         self.app.config['market_overview_service'] = self.market_overview_service
         self.app.config['technical_signals_service'] = self.technical_signals_service
         self.app.config['price_history_service'] = self.price_history_service
+        self.app.config['ema_signal_service'] = self.ema_signal_service
         
         # Create authentication decorators
         self.require_auth, self.require_admin = create_auth_decorators(self.auth_service)
@@ -159,6 +172,7 @@ class NepalStockApp:
         register_market_overview_routes(self.app)
         register_trading_signals_routes(self.app)
         register_price_history_routes(self.app)
+        register_ema_signal_routes(self.app)
         
         # Initialize data
         self._initialize_app()
@@ -211,32 +225,65 @@ class NepalStockApp:
         except Exception as e:
             logger.warning(f"Initial NEPSE history scrape failed: {e}")
 
-        # Generate initial trading signals
-        logger.info("Generating initial trading signals...")
+        # Generate initial technical signals (3-day EMA)
+        logger.info("Generating initial technical trading signals (3-day EMA)...")
         try:
             signals_result = self.technical_signals_service.generate_signals(
                 ema_period=3,
                 min_holding_days=3
             )
             if signals_result['success']:
-                logger.info(f"Initial trading signals generated successfully")
+                logger.info(f"Initial technical signals generated successfully")
                 if signals_result['latest_signal']:
                     sig = signals_result['latest_signal']
                     logger.info(f"  Latest signal: {sig['type'].upper()} on {sig['date']} at price {sig['price']}")
                     logger.info(f"  EMA value: {sig['ema']}")
-                    if sig.get('days_since_last'):
-                        logger.info(f"  Days since last signal: {sig['days_since_last']}")
                 
-                # Show trade statistics
                 if signals_result.get('trades'):
                     trades = signals_result['trades']
                     logger.info(f"  Completed trades: {trades['completed']}")
                     logger.info(f"  Win rate: {trades['win_rate']}%")
-                    logger.info(f"  Total return: {trades['total_return']}%")
             else:
-                logger.warning(f"Signal generation failed: {signals_result.get('error')}")
+                logger.warning(f"Technical signal generation failed: {signals_result.get('error')}")
         except Exception as e:
-            logger.warning(f"Initial signal generation failed: {e}")
+            logger.warning(f"Initial technical signal generation failed: {e}")
+        
+        # Generate initial EMA trading signals (4-day EMA with 2-day holding)
+        logger.info("Generating initial EMA trading signals (4-day EMA, 2-day holding)...")
+        try:
+            ema_result = self.ema_signal_service.generate_signals(force=True)
+            
+            if ema_result['success']:
+                logger.info(f"Initial EMA signals generated successfully")
+                logger.info(f"Signals generated: {ema_result['signals_generated']}")
+                
+                if ema_result['latest_signal']:
+                    signal = ema_result['latest_signal']
+                    logger.info(f"Latest EMA Signal: {signal['signal']} on {signal['date']}")
+                    logger.info(f"  Price: {signal['price']:.2f}")
+                    logger.info(f"  EMA (4-day): {signal['ema']:.2f}")
+                    logger.info(f"  Can Trade: {signal['can_trade']}")
+                    
+                    if signal['holding_period_active']:
+                        logger.info(f"  Holding Period: {signal['holding_days_remaining']} days remaining")
+                    
+                    if signal['days_since_last_signal']:
+                        logger.info(f"  Days Since Last Signal: {signal['days_since_last_signal']}")
+                
+                if ema_result['trade_summary']:
+                    summary = ema_result['trade_summary']
+                    logger.info(f"EMA Trade Statistics:")
+                    logger.info(f"  Total Signals: {summary.get('total_signals', 0)}")
+                    logger.info(f"  Buy Signals: {summary.get('buy_signals', 0)}")
+                    logger.info(f"  Sell Signals: {summary.get('sell_signals', 0)}")
+                    logger.info(f"  Total Trades: {summary.get('total_trades', 0)}")
+                    logger.info(f"  Win Rate: {summary.get('win_rate', 0):.1f}%")
+                    logger.info(f"  Avg P&L: {summary.get('avg_profit_loss', 0):.2f}%")
+                    logger.info(f"  Total Return: {summary.get('total_return', 0):.2f}%")
+            else:
+                logger.warning(f"EMA signal generation failed: {ema_result.get('error', 'Unknown error')}")
+        except Exception as e:
+            logger.warning(f"Initial EMA signal generation failed: {e}")
             import traceback
             logger.error(traceback.format_exc())
         
@@ -312,6 +359,7 @@ class NepalStockApp:
         logger.info(f"Auth Database: Persistent (survives deployments)")
         logger.info(f"Data Database: Ephemeral (fresh data on each deployment)")
         logger.info(f"Price History: Persistent 30-day rolling window")
+        logger.info(f"EMA Signal Service: 4-day EMA with 2-day minimum holding period")
         
         # Graceful shutdown handler
         def signal_handler(sig, frame):

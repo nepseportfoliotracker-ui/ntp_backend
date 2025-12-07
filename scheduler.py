@@ -1,4 +1,4 @@
-# scheduler.py - Smart Scheduler with Price History Support
+# scheduler.py - Smart Scheduler with EMA Signal Generation
 
 import logging
 import hashlib
@@ -12,10 +12,11 @@ logger = logging.getLogger(__name__)
 
 
 class SmartScheduler:
-    """Intelligent scheduler for market-aware scraping, IPO notifications, NEPSE history, market overview, and price history"""
+    """Intelligent scheduler for market-aware scraping, IPO notifications, NEPSE history, market overview, price history, and EMA signals"""
     
     def __init__(self, scraping_service, price_service, db_service, notification_checker, 
-                 nepse_history_service, market_overview_service, price_history_service=None):
+                 nepse_history_service, market_overview_service, price_history_service=None, 
+                 ema_signal_service=None):
         self.scraping_service = scraping_service
         self.price_service = price_service
         self.db_service = db_service
@@ -23,6 +24,7 @@ class SmartScheduler:
         self.nepse_history_service = nepse_history_service
         self.market_overview_service = market_overview_service
         self.price_history_service = price_history_service
+        self.ema_signal_service = ema_signal_service
         self.scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Kathmandu'))
         
         # Market configuration for Nepal (Sunday-Thursday, 11 AM - 3 PM)
@@ -317,7 +319,7 @@ class SmartScheduler:
             logger.error(f"Scheduled IPO notification failed: {e}")
     
     def scheduled_nepse_history_scrape(self):
-        """Execute scheduled NEPSE history scraping with signal generation"""
+        """Execute scheduled NEPSE history scraping with automatic EMA signal generation"""
         try:
             logger.info("=== Scheduled NEPSE History Scrape Started ===")
             
@@ -334,57 +336,61 @@ class SmartScheduler:
             self.nepse_history_service.clean_old_data()
             logger.info("Old NEPSE history data cleaned")
             
-            # Generate trading signals after scraping
-            self.scheduled_generate_signals()
+            # Automatically generate EMA trading signals after NEPSE history update
+            if self.ema_signal_service:
+                self.scheduled_generate_ema_signals()
+            else:
+                logger.warning("EMA signal service not available - skipping signal generation")
             
         except Exception as e:
             logger.error(f"Scheduled NEPSE history scrape failed: {e}")
 
-    def scheduled_generate_signals(self):
-        """Execute trading signal generation after NEPSE history update"""
+    def scheduled_generate_ema_signals(self):
+        """Execute EMA trading signal generation immediately after NEPSE history update"""
         try:
-            logger.info("=== Generating Trading Signals for Tomorrow ===")
+            logger.info("=== Generating EMA Trading Signals (4-Day EMA, 2-Day Holding) ===")
             
-            # Import here to avoid circular dependency
-            from technical_signals_service import TechnicalSignalsService
+            if not self.ema_signal_service:
+                logger.error("EMA signal service not initialized")
+                return
             
-            # Create signals service if not already available
-            if not hasattr(self, 'signals_service'):
-                self.signals_service = TechnicalSignalsService(
-                    self.db_service,
-                    self.nepse_history_service
-                )
-            
-            # Generate signals with default parameters
-            result = self.signals_service.generate_signals(
-                ema_period=3,
-                min_holding_days=3
-            )
+            # Generate signals with configured parameters
+            result = self.ema_signal_service.generate_signals(force=False)
             
             if result['success']:
-                logger.info("Trading signal generation completed successfully")
+                logger.info("EMA signal generation completed successfully")
+                logger.info(f"Signals generated: {result['signals_generated']}")
                 
                 if result['latest_signal']:
                     signal = result['latest_signal']
-                    logger.info(f"Latest Signal: {signal['type'].upper()}")
-                    logger.info(f"  Date: {signal['date']}")
-                    logger.info(f"  Price: {signal['price']}")
-                    logger.info(f"  EMA (3): {signal['ema']}")
-
+                    logger.info(f"Latest Signal: {signal['signal']} on {signal['date']}")
+                    logger.info(f"  Price: {signal['price']:.2f}")
+                    logger.info(f"  EMA (4-day): {signal['ema']:.2f}")
+                    logger.info(f"  Can Trade: {signal['can_trade']}")
+                    
+                    if signal['holding_period_active']:
+                        logger.info(f"  Holding Period Active: {signal['holding_days_remaining']} days remaining")
+                    
+                    if signal['days_since_last_signal']:
+                        logger.info(f"  Days Since Last Signal: {signal['days_since_last_signal']}")
                 
-                if result['analysis']:
-                    analysis = result['analysis']
-                    logger.info(f"Signal Statistics:")
-                    logger.info(f"  Total Signals: {analysis.get('total_signals', 0)}")
-                    logger.info(f"  Buy Signals: {analysis.get('buy_signals', 0)}")
-                    logger.info(f"  Sell Signals: {analysis.get('sell_signals', 0)}")
-                    logger.info(f"  Win Rate: {analysis.get('win_rate', 0):.1f}%")
-                    logger.info(f"  Last Signal Type: {analysis.get('last_signal', 'N/A')}")
+                if result['trade_summary']:
+                    summary = result['trade_summary']
+                    logger.info(f"Trade Statistics:")
+                    logger.info(f"  Total Signals: {summary.get('total_signals', 0)}")
+                    logger.info(f"  Buy Signals: {summary.get('buy_signals', 0)}")
+                    logger.info(f"  Sell Signals: {summary.get('sell_signals', 0)}")
+                    logger.info(f"  Total Trades: {summary.get('total_trades', 0)}")
+                    logger.info(f"  Win Rate: {summary.get('win_rate', 0):.1f}%")
+                    logger.info(f"  Avg P&L: {summary.get('avg_profit_loss', 0):.2f}%")
+                    logger.info(f"  Total Return: {summary.get('total_return', 0):.2f}%")
             else:
-                logger.warning(f"Signal generation failed: {result.get('error', 'Unknown error')}")
+                logger.warning(f"EMA signal generation failed: {result.get('error', 'Unknown error')}")
             
         except Exception as e:
-            logger.error(f"Failed to generate trading signals: {e}")
+            logger.error(f"Failed to generate EMA trading signals: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     def scheduled_overview_cleanup(self):
         """Execute market overview data cleanup"""
@@ -507,7 +513,7 @@ class SmartScheduler:
                 replace_existing=True
             )
             
-            # Job 4: NEPSE history scraping - once daily at 3:10 PM (after market close)
+            # Job 4: NEPSE history scraping + EMA signal generation - once daily at 3:10 PM (after market close)
             self.scheduler.add_job(
                 func=self.scheduled_nepse_history_scrape,
                 trigger=CronTrigger(
@@ -517,7 +523,7 @@ class SmartScheduler:
                     timezone=self.nepal_tz
                 ),
                 id='nepse_history_scraper',
-                name='NEPSE History Scraper (4 PM on Market Days)',
+                name='NEPSE History Scraper + EMA Signal Generator (3:10 PM)',
                 max_instances=1,
                 replace_existing=True
             )
@@ -543,7 +549,7 @@ class SmartScheduler:
             logger.info("Daily price save: 3:05 PM on market days (Sun-Thu) to persistent history")
             logger.info("IPO scrapes: Once daily at 11:10 AM on market days (Sun-Thu)")
             logger.info("IPO notifications: Once daily at 5:52 PM on market days (Sun-Thu)")
-            logger.info("NEPSE history: Daily at 3:10 PM (Sun-Thu)")
+            logger.info("NEPSE history + EMA signals: Daily at 3:10 PM (Sun-Thu)")
             logger.info("Market overview cleanup: Daily at 11:59 PM (Sun-Thu)")
             
             next_scrape = self.scheduler.get_job('market_scraper').next_run_time
@@ -562,7 +568,7 @@ class SmartScheduler:
             if next_ipo_notif:
                 logger.info(f"Next IPO notification: {next_ipo_notif.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             if next_history:
-                logger.info(f"Next NEPSE history scrape: {next_history.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                logger.info(f"Next NEPSE history + EMA signals: {next_history.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             if next_cleanup:
                 logger.info(f"Next market overview cleanup: {next_cleanup.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             
@@ -586,6 +592,7 @@ class SmartScheduler:
                 'next_ipo_scrape': None,
                 'next_ipo_notification': None,
                 'next_nepse_history_scrape': None,
+                'next_ema_signal_generation': None,
                 'next_overview_cleanup': None,
                 'current_nepal_time': self._get_current_nepal_time().isoformat(),
                 'market_currently_open': self._is_market_open(),
@@ -611,6 +618,7 @@ class SmartScheduler:
                     status['next_ipo_notification'] = ipo_notif_job.next_run_time.isoformat()
                 if history_job and history_job.next_run_time:
                     status['next_nepse_history_scrape'] = history_job.next_run_time.isoformat()
+                    status['next_ema_signal_generation'] = history_job.next_run_time.isoformat()
                 if cleanup_job and cleanup_job.next_run_time:
                     status['next_overview_cleanup'] = cleanup_job.next_run_time.isoformat()
             
