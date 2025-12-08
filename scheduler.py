@@ -16,7 +16,7 @@ class SmartScheduler:
     
     def __init__(self, scraping_service, price_service, db_service, notification_checker, 
                  nepse_history_service, market_overview_service, price_history_service=None, 
-                 ema_signal_service=None):
+                 ema_signal_service=None, ema_notification_service=None):
         self.scraping_service = scraping_service
         self.price_service = price_service
         self.db_service = db_service
@@ -25,6 +25,7 @@ class SmartScheduler:
         self.market_overview_service = market_overview_service
         self.price_history_service = price_history_service
         self.ema_signal_service = ema_signal_service
+        self.ema_notification_service = ema_notification_service
         self.scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Kathmandu'))
         
         # Market configuration for Nepal (Sunday-Thursday, 11 AM - 3 PM)
