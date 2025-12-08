@@ -23,6 +23,7 @@ from market_overview_service import MarketOverviewService
 from technical_signals_service import TechnicalSignalsService
 from price_history_service import PriceHistoryService
 from ema_signal_service import EMASignalService
+from ema_notification_service import EMANotificationService
 
 # Import modular components
 from scheduler import SmartScheduler
@@ -32,6 +33,7 @@ from routes_technical_analysis import register_technical_analysis_routes
 from routes_market_overview import register_market_overview_routes
 from routes_price_history import register_price_history_routes
 from routes_ema_signals import register_ema_signal_routes
+from routes_ema_notification import register_ema_notification_routes
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -123,7 +125,15 @@ class NepalStockApp:
         )
         logger.info("EMA signal service initialized (4-day EMA, 2-day holding period)")
         
-        # Initialize intelligent scheduler with EMA signal service
+        # Initialize EMA Notification Service (automatic push notifications)
+        self.ema_notification_service = EMANotificationService(
+            self.db_service,
+            self.push_service,
+            self.ema_signal_service
+        )
+        logger.info("EMA notification service initialized (automatic push notifications)")
+        
+        # Initialize intelligent scheduler with EMA signal and notification services
         self.smart_scheduler = SmartScheduler(
             self.scraping_service, 
             self.price_service, 
@@ -132,7 +142,8 @@ class NepalStockApp:
             self.nepse_history_service,
             self.market_overview_service,
             self.price_history_service,
-            self.ema_signal_service
+            self.ema_signal_service,
+            self.ema_notification_service
         )
         
         # Add signals service to scheduler for compatibility
@@ -158,6 +169,7 @@ class NepalStockApp:
         self.app.config['technical_signals_service'] = self.technical_signals_service
         self.app.config['price_history_service'] = self.price_history_service
         self.app.config['ema_signal_service'] = self.ema_signal_service
+        self.app.config['ema_notification_service'] = self.ema_notification_service
         
         # Create authentication decorators
         self.require_auth, self.require_admin = create_auth_decorators(self.auth_service)
@@ -171,6 +183,7 @@ class NepalStockApp:
         register_market_overview_routes(self.app)
         register_price_history_routes(self.app)
         register_ema_signal_routes(self.app)
+        register_ema_notification_routes(self.app)
         
         # Initialize data
         self._initialize_app()
