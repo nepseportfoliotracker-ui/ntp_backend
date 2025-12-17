@@ -14,6 +14,7 @@ def register_ema_notification_routes(app):
     require_admin = app.config.get('require_admin')
     
     @app.route('/api/ema-signals/notifications/send', methods=['POST'])
+    @require_auth    # FIXED: Added @require_auth before @require_admin
     @require_admin
     def trigger_ema_notification():
         """
@@ -57,6 +58,7 @@ def register_ema_notification_routes(app):
             }), 500
     
     @app.route('/api/ema-signals/notifications/test', methods=['POST'])
+    @require_auth    # FIXED: Added @require_auth before @require_admin
     @require_admin
     def send_test_ema_notification():
         """
@@ -164,6 +166,7 @@ def register_ema_notification_routes(app):
             }), 500
     
     @app.route('/api/ema-signals/notifications/reset/<date>', methods=['POST'])
+    @require_auth    # FIXED: Added @require_auth before @require_admin
     @require_admin
     def reset_ema_notification(date):
         """
